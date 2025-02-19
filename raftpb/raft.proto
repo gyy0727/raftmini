@@ -1,0 +1,120 @@
+syntax = "proto2";
+package raftpb;
+
+import "gogoproto/gogo.proto";
+
+option (gogoproto.marshaler_all) = true; //*下列三个选项所有类型生成序列化、大小计算和反序列化的代码
+option (gogoproto.sizer_all) = true;
+option (gogoproto.unmarshaler_all) = true;
+option (gogoproto.goproto_getters_all) = false;//*下列两个选项表示不自动生成 getter 方法和枚举前缀
+option (gogoproto.goproto_enum_prefix_all) = false;
+
+//*标识有两种entry,一种是追加日志,一种是配置变更
+enum EntryType {
+	EntryNormal     = 0;
+	EntryConfChange = 1;
+}
+
+
+//*标识一个单独的日志项
+message Entry {
+	//*任期
+	optional uint64     Term  = 2 [(gogoproto.nullable) = false]; // must be 64-bit aligned for atomic operations
+	//*日志项对应的索引
+	optional uint64     Index = 3 [(gogoproto.nullable) = false]; // must be 64-bit aligned for atomic operations
+	//*日志的类型:配置变更和日志追加
+	optional EntryType  Type  = 1 [(gogoproto.nullable) = false];
+	//*数据
+	optional bytes      Data  = 4;
+}
+
+//*快照数据
+message SnapshotMetadata {
+	optional ConfState conf_state = 1 [(gogoproto.nullable) = false];
+	optional uint64    index      = 2 [(gogoproto.nullable) = false];
+	optional uint64    term       = 3 [(gogoproto.nullable) = false];
+}
+
+message Snapshot {
+	optional bytes            data     = 1;
+	optional SnapshotMetadata metadata = 2 [(gogoproto.nullable) = false];
+}
+
+enum MessageType {
+    // 节点启动选举的消息
+    MsgHup             = 0;
+    // 心跳消息
+    MsgBeat            = 1;
+    // 提议消息
+    MsgProp            = 2;
+    // 日志追加消息
+    MsgApp             = 3;
+    // 日志追加响应消息
+    MsgAppResp         = 4;
+    // 投票消息
+    MsgVote            = 5;
+    // 投票响应消息
+    MsgVoteResp        = 6;
+    // 快照消息
+    MsgSnap            = 7;
+    // 心跳消息
+    MsgHeartbeat       = 8;
+    // 心跳响应消息
+    MsgHeartbeatResp   = 9;
+    // 节点不可达消息
+    MsgUnreachable     = 10;
+    // 快照状态消息
+    MsgSnapStatus      = 11;
+    // 检查法定人数消息
+    MsgCheckQuorum     = 12;
+    // 转移领导权消息
+    MsgTransferLeader  = 13;
+    // 立即超时消息
+    MsgTimeoutNow      = 14;
+    // 读取索引消息
+    MsgReadIndex       = 15;
+    // 读取索引响应消息
+    MsgReadIndexResp   = 16;
+    // 预投票消息
+    MsgPreVote         = 17;
+    // 预投票响应消息
+    MsgPreVoteResp     = 18;
+}
+
+message Message {
+	optional MessageType type        = 1  [(gogoproto.nullable) = false];
+	optional uint64      to          = 2  [(gogoproto.nullable) = false];
+	optional uint64      from        = 3  [(gogoproto.nullable) = false];
+	optional uint64      term        = 4  [(gogoproto.nullable) = false];
+	optional uint64      logTerm     = 5  [(gogoproto.nullable) = false];
+	optional uint64      index       = 6  [(gogoproto.nullable) = false];
+	repeated Entry       entries     = 7  [(gogoproto.nullable) = false];
+	optional uint64      commit      = 8  [(gogoproto.nullable) = false];
+	optional Snapshot    snapshot    = 9  [(gogoproto.nullable) = false];
+	optional bool        reject      = 10 [(gogoproto.nullable) = false];
+	optional uint64      rejectHint  = 11 [(gogoproto.nullable) = false];
+	optional bytes       context     = 12;
+}
+
+message HardState {
+	optional uint64 term   = 1 [(gogoproto.nullable) = false];
+	optional uint64 vote   = 2 [(gogoproto.nullable) = false];
+	optional uint64 commit = 3 [(gogoproto.nullable) = false];
+}
+
+message ConfState {
+	repeated uint64 nodes = 1;
+}
+
+enum ConfChangeType {
+	ConfChangeAddNode    = 0;
+	ConfChangeRemoveNode = 1;
+	ConfChangeUpdateNode = 2;
+}
+
+message ConfChange {
+	optional uint64          ID      = 1 [(gogoproto.nullable) = false];
+	optional ConfChangeType  Type    = 2 [(gogoproto.nullable) = false];
+	optional uint64          NodeID  = 3 [(gogoproto.nullable) = false];
+	optional bytes           Context = 4;
+}
