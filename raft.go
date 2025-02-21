@@ -465,19 +465,18 @@ func (r *raft) maybeCommit() bool {
 	return r.raftLog.maybeCommit(mci, r.Term)
 }
 
-
-//*重置raft的状态
-//*reset(term uint64) 函数会在以下情况下被调用：
-//*节点检测到更高的任期（收到更高任期的消息）。
-//*领导者退回到跟随者角色。
-//*节点启动新一轮选举（转换为候选者）。
-//*节点初始化或从故障恢复。
-//*NOTE每个节点都要有 Progress 吗？
-//* 是的，在代码实现上，每个节点（包括 Follower）在 r.prs 中都有一个 Progress 条目。这是设计选择的结果，而非 Raft 算法的硬性要求。
-//* Follower 节点需要 Progress 吗？
-//* 不需要。从 Raft 算法的逻辑上看，Follower 不使用 Progress，它只在 Leader 角色下有意义。但在实现中，Follower 仍然持有 Progress，是为了在可能的角色切换（成为 Leader）时无缝过渡。
-//* 为什么这样设计？
-//* 这种设计是为了简化代码逻辑、保持状态一致性，并为动态角色切换做准备。尽管对 Follower 来说是“多余”的，但它在整体实现中提供了便利性和健壮性。
+// *重置raft的状态
+// *reset(term uint64) 函数会在以下情况下被调用：
+// *节点检测到更高的任期（收到更高任期的消息）。
+// *领导者退回到跟随者角色。
+// *节点启动新一轮选举（转换为候选者）。
+// *节点初始化或从故障恢复。
+// *NOTE每个节点都要有 Progress 吗？
+// * 是的，在代码实现上，每个节点（包括 Follower）在 r.prs 中都有一个 Progress 条目。这是设计选择的结果，而非 Raft 算法的硬性要求。
+// * Follower 节点需要 Progress 吗？
+// * 不需要。从 Raft 算法的逻辑上看，Follower 不使用 Progress，它只在 Leader 角色下有意义。但在实现中，Follower 仍然持有 Progress，是为了在可能的角色切换（成为 Leader）时无缝过渡。
+// * 为什么这样设计？
+// * 这种设计是为了简化代码逻辑、保持状态一致性，并为动态角色切换做准备。尽管对 Follower 来说是“多余”的，但它在整体实现中提供了便利性和健壮性。
 func (r *raft) reset(term uint64) {
 	if r.Term != term {
 		//*如果是新的任期，那么保存任期号，同时将投票节点置空
@@ -503,5 +502,132 @@ func (r *raft) reset(term uint64) {
 
 }
 
+// *批量append一堆entries
+func (r *raft) appendEntry(es ...pb.Entry) {
+	//*当前节点的最后一条日志的索引
+	li := r.raftLog.lastIndex()
+	for i := range es {
+		es[i].Term = r.Term
+		es[i].Index = li + uint64(i) + 1
+	}
+	r.raftLog.append(es...)
+	//*更新当前节点的进度
+	r.prs[r.id].maybeUpdate(r.raftLog.lastIndex())
+	//*将新的日志条目发送给其他节点
+	r.maybeCommit()
+}
 
-//*批量append一堆entries
+// *follower以及candidate的tick(心跳)函数，在r.electionTimeout(选举超时)之后被调用
+func (r *raft) tickElection() {
+	r.electionElapsed++
+	if r.promotable() && r.pastElectionTimeout() {
+		r.electionElapsed = 0
+		r.Step(pb.Message{From: r.id, Type: pb.MsgHup})
+	}
+}
+
+// *leader的tick(心跳)函数，在r.heartbeatTimeout(心跳超时)之后被调用
+func (r *raft) tickHeartbeat() {
+	// NOTE理解electionElapsed和heartbeatElapsed
+	r.heartbeatElapsed++
+	r.electionElapsed++
+
+	if r.electionElapsed >= r.electionTimeout {
+		r.electionElapsed =0
+		if r.checkQuorum {
+			r.step(pb.Message{From: r.id, Type: pb.MsgCheckQuorum})
+		}
+		if r.state == StateLeader && r.leadTransferee != None {
+			//*当前在迁移leader的流程，但是过了选举超时新的leader还没有产生，那么旧的leader重新成为leader
+			r.abortLeaderTransfer()
+		}
+	}
+
+	if r.state != StateLeader{
+		//*不是leader 
+		return
+	}
+
+	if r.heartbeatElapsed >= r.heartbeatTimeout {
+		//*向集群中其他节点发送广播消息
+		r.heartbeatElapsed = 0
+		//*尝试发送MsgBeat消息
+		r.Step(pb.Message{From: r.id, Type: pb.MsgBeat})
+	}
+
+}
+
+
+//*将节点转换成follower状态
+func (r *raft) becomeFollower(term uint64, lead uint64) {
+	r.step = stepFollower
+	r.reset(term)
+	r.tick = r.tickElection
+	r.lead = lead
+	r.state = StateFollower
+	r.logger.Infof("%x became follower at term %d", r.id, r.Term)
+}
+
+//*将节点转换成候选人状态
+func (r *raft) becomeCandidate() {
+	//*NOTE leader应该转换成follower再转换成candidate,这才是raft的正常逻辑
+	if r.state == StateLeader {
+		panic("invalid transition [leader -> pre-candidate]")
+	}
+	r.step = stepCandidate
+	//*因为进入candidate状态，意味着需要重新进行选举了，所以reset的时候传入的是Term+1
+	r.reset(r.Term + 1)
+	r.tick = r.tickElection
+	//*给自己投票
+	r.Vote = r.id
+	r.state = StateCandidate
+	r.logger.Infof("%x became candidate at term %d", r.id, r.Term)
+}
+
+
+//*将节点转换成预候选人状态
+func (r *raft) becomePreCandidate() {
+	//*NOTE leader应该转换成follower再转换成candidate,这才是raft的正常逻辑
+	if r.state ==StatePreCandidate{
+		panic("invalid transition [pre-candidate -> pre-candidate]")
+	}
+	//*prevote不会递增term，也不会先进行投票，而是等prevote结果出来再进行决定
+	r.step = stepCandidate
+	r.tick = r.tickElection
+	r.state = StatePreCandidate
+	r.logger.Infof("%x became pre-candidate at term %d", r.id, r.Term)
+}
+
+
+//*转换节点状态为 leader
+func (r *raft) becomeLeader() {
+	//*NOTE 应该由candidate转换成leader的逻辑
+	if r.state == StateFollower {
+		panic("invalid transition [follower -> leader]")
+	}
+	r.step = stepLeader
+	r.reset(r.Term)
+	r.tick = r.tickHeartbeat
+	r.lead = r.id
+	r.state = StateLeader
+	//*获取未提交的日志条目
+	ents, err := r.raftLog.entries(r.raftLog.committed+1, noLimit)
+	if err != nil {
+		r.logger.Panicf("unexpected error getting uncommitted entries (%v)", err)
+	}
+
+	//* 变成leader之前，这里还有没commit的配置变化消息
+	//*统计 ents 中未提交的配置变更条目数量（EntryConfChange 类型）
+	nconf := numOfPendingConf(ents)
+	//*NOTE Raft 要求一次只处理一个配置变更（参考论文 Section 6），避免复杂的状态冲突
+	if nconf > 1 {
+		panic("unexpected multiple uncommitted config entry")
+	}
+	if nconf == 1 {
+		r.pendingConf = true
+	}
+
+	//*为什么成为leader之后需要传入一个空数据？
+	r.appendEntry(pb.Entry{Data: nil})
+	r.logger.Infof("%x became leader at term %d", r.id, r.Term)
+}
