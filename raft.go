@@ -533,7 +533,7 @@ func (r *raft) tickHeartbeat() {
 	r.electionElapsed++
 
 	if r.electionElapsed >= r.electionTimeout {
-		r.electionElapsed =0
+		r.electionElapsed = 0
 		if r.checkQuorum {
 			r.step(pb.Message{From: r.id, Type: pb.MsgCheckQuorum})
 		}
@@ -543,8 +543,8 @@ func (r *raft) tickHeartbeat() {
 		}
 	}
 
-	if r.state != StateLeader{
-		//*不是leader 
+	if r.state != StateLeader {
+		//*不是leader
 		return
 	}
 
@@ -557,8 +557,7 @@ func (r *raft) tickHeartbeat() {
 
 }
 
-
-//*将节点转换成follower状态
+// *将节点转换成follower状态
 func (r *raft) becomeFollower(term uint64, lead uint64) {
 	r.step = stepFollower
 	r.reset(term)
@@ -568,7 +567,7 @@ func (r *raft) becomeFollower(term uint64, lead uint64) {
 	r.logger.Infof("%x became follower at term %d", r.id, r.Term)
 }
 
-//*将节点转换成候选人状态
+// *将节点转换成候选人状态
 func (r *raft) becomeCandidate() {
 	//*NOTE leader应该转换成follower再转换成candidate,这才是raft的正常逻辑
 	if r.state == StateLeader {
@@ -584,11 +583,10 @@ func (r *raft) becomeCandidate() {
 	r.logger.Infof("%x became candidate at term %d", r.id, r.Term)
 }
 
-
-//*将节点转换成预候选人状态
+// *将节点转换成预候选人状态
 func (r *raft) becomePreCandidate() {
 	//*NOTE leader应该转换成follower再转换成candidate,这才是raft的正常逻辑
-	if r.state ==StatePreCandidate{
+	if r.state == StatePreCandidate {
 		panic("invalid transition [pre-candidate -> pre-candidate]")
 	}
 	//*prevote不会递增term，也不会先进行投票，而是等prevote结果出来再进行决定
@@ -598,8 +596,7 @@ func (r *raft) becomePreCandidate() {
 	r.logger.Infof("%x became pre-candidate at term %d", r.id, r.Term)
 }
 
-
-//*转换节点状态为 leader
+// *转换节点状态为 leader
 func (r *raft) becomeLeader() {
 	//*NOTE 应该由candidate转换成leader的逻辑
 	if r.state == StateFollower {
@@ -631,3 +628,60 @@ func (r *raft) becomeLeader() {
 	r.appendEntry(pb.Entry{Data: nil})
 	r.logger.Infof("%x became leader at term %d", r.id, r.Term)
 }
+
+// *发起选举
+func (r *raft) campaign(t CampaignType) {
+	//*任期号
+	var term uint64
+	//*投票消息
+	var voteMsg pb.MessageType
+	if t == campaignPreElection {
+		//*预选举
+		r.becomePreCandidate()
+		voteMsg = pb.MsgPreVote //*预投票
+		//*NOET Pre-Vote 是为了在正式选举前探测集群是否支持该节点成为 Leader，避免直接递增任期带来的干扰
+		term = r.Term + 1
+	} else {
+		//*选举
+		r.becomeCandidate()
+		term = r.Term
+		voteMsg = pb.MsgVote //*正式投票
+	}
+	//*调用poll函数给自己投票，同时返回当前投票给本节点的节点数量
+	//*NOTE 假设有五个节点,为什么此处不会是 poll = 4？
+	//*campaign 函数的逻辑是：
+	//*	给自己投票（r.poll(...)）。
+	//*	检查是否立即获胜（单节点情况
+	//*	如果不满足，继续向其他节点发送投票请求。
+	//* TAG 仅仅对于单节点的集群
+	if r.quorum() == r.poll(r.id, voteRespMsgType(voteMsg), true) {
+		//*有半数投票，说明通过，切换到下一个状态
+		if t == campaignPreElection {
+			r.campaign(campaignElection)
+		} else {
+			//*如果给自己投票之后，刚好超过半数的通过，那么就成为新的leader
+			r.becomeLeader()
+		}
+		return
+
+	}
+	//*向集群的其他节点发送投票消息
+	for id := range r.prs {
+		if id == r.id {
+			//*过滤掉自己
+			continue
+		}
+		r.logger.Infof("%x [logterm: %d, index: %d] sent %s request to %x at term %d",
+			r.id, r.raftLog.lastTerm(), r.raftLog.lastIndex(), voteMsg, id, r.Term)
+
+		var ctx []byte
+		if t == campaignTransfer {
+			ctx = []byte(t)
+		}
+		r.send(pb.Message{Term: term, To: id, Type: voteMsg, Index: r.raftLog.lastIndex(), LogTerm: r.raftLog.lastTerm(), Context: ctx})
+	}
+
+}
+
+
+
