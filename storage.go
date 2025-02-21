@@ -20,7 +20,7 @@ var ErrUnavailable = errors.New("requested entry at index is unavailable")
 var ErrSnapshotTemporarilyUnavailable = errors.New("snapshot is temporarily unavailable")
 
 type Storage interface {
-	//*返回保存的初始状态
+	//*返回硬状态,配置状态和错误信息
 	InitialState() (pb.HardState, pb.ConfState, error)
 
 	//*返回索引范围在[lo,hi)之内并且不大于maxSize的entries数组
