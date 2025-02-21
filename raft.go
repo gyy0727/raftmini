@@ -1,6 +1,7 @@
 package raftmini
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math"
@@ -683,5 +684,143 @@ func (r *raft) campaign(t CampaignType) {
 
 }
 
+// *轮询集群中所有节点，返回一共有多少节点已经进行了投票
+func (r *raft) poll(id uint64, t pb.MessageType, v bool) (granted int) {
+	//*v 为 true 时，表示当前节点（r.id）收到了来自其他节点（id）的投票支持，记录日志
+	if v {
+		r.logger.Infof("%x received %s from %x at term %d", r.id, t, id, r.Term)
+	} else {
+		//*v 为 false 时，表示当前节点（r.id）收到了来自节点（id）的投票拒绝，记录日志。
+		r.logger.Infof("%x received %s rejection from %x at term %d", r.id, t, id, r.Term)
+	}
+	//*如果id没有投票过，那么更新id的投票情况
+	if _, ok := r.votes[id]; !ok {
+		r.votes[id] = v
+	}
+	//*计算下都有多少节点已经投票给自己了
+	for _, vv := range r.votes {
+		if vv {
+			granted++
+		}
+	}
+	return granted
+}
 
+// *raft 状态机的核心函数，处理消息
+func (r *raft) Step(m pb.Message) error {
+	r.logger.Infof("from:%d, to:%d, type:%s, term:%d, state:%v", m.From, m.To, m.Type, r.Term, r.state)
 
+	switch {
+	case m.Term == 0:
+		//*来自本地的消息
+	case m.Term > r.Term:
+		//*来自更高任期的消息
+		//*是预投票或者投票的消息
+		lead := m.From
+		if m.Type == pb.MsgVote || m.Type == pb.MsgPreVote {
+			//*检查是否是强制选举:强制集群中的某个节点（或所有节点）参与一次新的选举，即使当前 Leader 仍然有效且集群状态正常
+			//*一般是领导权转移
+			force := bytes.Equal(m.Context, []byte(campaignTransfer))
+			//*是否在租约期以内
+			inLease := r.checkQuorum && r.lead != None && r.electionElapsed < r.electionTimeout
+			if !force && inLease {
+				//*如果非强制，而且又在租约期以内，就不做任何处理
+				//*非强制又在租约期内可以忽略选举消息，见论文的4.2.3，这是为了阻止已经离开集群的节点再次发起投票请求
+				//*已经离开集群的非法节点可能以为自己是集群的一部分发起选举
+				r.logger.Infof("%x [logterm: %d, index: %d, vote: %x] ignored %s from %x [logterm: %d, index: %d] at term %d: lease is not expired (remaining ticks: %d)",
+					r.id, r.raftLog.lastTerm(), r.raftLog.lastIndex(), r.Vote, m.Type, m.From, m.LogTerm, m.Index, r.Term, r.electionTimeout-r.electionElapsed)
+				return nil
+			}
+
+			//*否则将lead置为空
+			//*能走到这里证明现在是正常的选举流程,将lead置为空是表明当前节点不认可from节点的领导权
+			lead = None
+		}
+		switch {
+		//*预投票
+		case m.Type == pb.MsgPreVote:
+			//*在应答一个prevote消息时不对任期term做修改
+		//*对自己发出的预投票的消息的响应且没有拒绝
+		case m.Type == pb.MsgPreVoteResp && !m.Reject:
+
+		default:
+			r.logger.Infof("%x [term: %d] received a %s message with higher term from %x [term: %d]",
+				r.id, r.Term, m.Type, m.From, m.Term)
+			//*如果是投票消息，那么将自己的状态转换为follower
+			r.becomeFollower(m.Term, lead)
+		}
+
+	case m.Term < r.Term:
+		//*消息的Term小于节点自身的Term，同时消息类型是心跳消息或者是append消息
+		if r.checkQuorum && (m.Type == pb.MsgHeartbeat || m.Type == pb.MsgApp) {
+			//*收到了一个节点发送过来的更小的term消息。这种情况可能是因为消息的网络延时导致，但是也可能因为该节点由于网络分区导致了它递增了term到一个新的任期。
+			//*，这种情况下该节点不能赢得一次选举，也不能使用旧的任期号重新再加入集群中。如果checkQurom为false，这种情况可以使用递增任期号应答来处理。
+			//*但是如果checkQurom为True，
+			//*此时收到了一个更小的term的节点发出的HB或者APP消息，于是应答一个appresp消息，试图纠正它的状态
+			r.send(pb.Message{To: m.From, Type: pb.MsgAppResp})
+		} else {
+
+			//*除了上面的情况以外，忽略任何term小于当前节点所在任期号的消息
+			r.logger.Infof("%x [term: %d] ignored a %s message with lower term from %x [term: %d]",
+				r.id, r.Term, m.Type, m.From, m.Term)
+		}
+		//*在消息的term小于当前节点的term时，不往下处理直接返回了
+		return nil
+	}
+
+	switch m.Type {
+	case pb.MsgHup:
+		//*收到HUP消息，说明准备进行选举
+		if r.state != StateLeader {
+			//*当前不是leader
+
+			//*取出[applied+1,committed+1]之间的消息，即得到还未进行applied的日志列表
+			ents, err := r.raftLog.slice(r.raftLog.applied+1, r.raftLog.committed+1, noLimit)
+			if err != nil {
+				r.logger.Panicf("unexpected error getting unapplied entries (%v)", err)
+			}
+			//*如果其中有config消息，并且commited > applied，说明当前还有没有apply的config消息，这种情况下不能开始投票
+			if n := numOfPendingConf(ents); n != 0 && r.raftLog.committed > r.raftLog.applied {
+				r.logger.Warningf("%x cannot campaign at term %d since there are still %d pending configuration changes to apply", r.id, r.Term, n)
+				return nil
+			}
+
+			r.logger.Infof("%x is starting a new election at term %d", r.id, r.Term)
+			//*进行选举
+			if r.preVote {
+				r.campaign(campaignPreElection)
+			} else {
+				r.campaign(campaignElection)
+			}
+		} else {
+			r.logger.Debugf("%x ignoring MsgHup because already leader", r.id)
+		}
+
+	case pb.MsgVote, pb.MsgPreVote:
+		//*收到投票类的消息
+
+		if (r.Vote == None || m.Term > r.Term || r.Vote == m.From) && r.raftLog.isUpToDate(m.Index, m.LogTerm) {
+			//*如果当前没有给任何节点投票（r.Vote == None）或者投票的节点term大于本节点的（m.Term > r.Term）
+			//*或者是之前已经投票的节点（r.Vote == m.From）
+			//*同时还满足该节点的消息是最新的（r.raftLog.isUpToDate(m.Index, m.LogTerm)），那么就接收这个节点的投票
+			r.logger.Infof("%x [logterm: %d, index: %d, vote: %x] cast %s for %x [logterm: %d, index: %d] at term %d",
+				r.id, r.raftLog.lastTerm(), r.raftLog.lastIndex(), r.Vote, m.Type, m.From, m.LogTerm, m.Index, r.Term)
+			r.send(pb.Message{To: m.From, Type: voteRespMsgType(m.Type)})
+			if m.Type == pb.MsgVote {
+				//*保存下来给哪个节点投票了
+				r.electionElapsed = 0
+				r.Vote = m.From
+			}
+		} else {
+			//*否则拒绝投票
+			r.logger.Infof("%x [logterm: %d, index: %d, vote: %x] rejected %s from %x [logterm: %d, index: %d] at term %d",
+				r.id, r.raftLog.lastTerm(), r.raftLog.lastIndex(), r.Vote, m.Type, m.From, m.LogTerm, m.Index, r.Term)
+			r.send(pb.Message{To: m.From, Type: voteRespMsgType(m.Type), Reject: true})
+		}
+
+	default:
+		//*其他情况下进入各种状态下自己定制的状态机函数
+		r.step(r, m)
+	}
+	return nil
+}
