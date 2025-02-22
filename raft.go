@@ -824,3 +824,8 @@ func (r *raft) Step(m pb.Message) error {
 	}
 	return nil
 }
+
+
+func stepLeader(r *raft ,m pb.Message){
+	
+}
