@@ -825,7 +825,82 @@ func (r *raft) Step(m pb.Message) error {
 	return nil
 }
 
+func stepLeader(r *raft, m pb.Message) {
+	//*根据消息的类型进行处理
+	switch m.Type {
+	case pb.MsgBeat:
+		r.bcastHeartbeat()
+		return
+	case pb.MsgCheckQuorum:
+		if !r.checkQuorumActive() {
+			//*检查集群的可用性,是否还支持节点成为领导
+			r.logger.Warningf("%x stepped down to follower since quorum is not active", r.id)
+			r.becomeFollower(r.Term, None)
+		}
+	return 
+	case pb.MsgProp:
+		//*提交日志 
+		if len(m.Entries) == 0 {
+			//*当前没有可以提交的日志
+		}
+		//*检查自己是否还在集群中
+		if _,ok = r.prs[r.id]; !ok {
+			//*不在集群中,不在集群那就不能做出干扰集群的行为
+			return
+		}
+		if r.leadTransferee != None {
+			r.logger.Infof("%x [term %d] transfer leadership to %x is in progress; dropping proposal", r.id, r.Term, r.leadTransferee)
+			return
+		}
+		//*开始提交日志
+		for i ,e := range m.Entries {
+			//*检查是否是配置变更
+			if e.Type == pb.EntryConfChange {
+				if r.pendingConf {
+					//*如果当前存在还没有处理的,则其他的配置先忽略掉 
+					r.logger.Infof("propose conf %s ignored since pending unapplied configuration", e)
+					m.Entries[i] = pb.Entry{Type: pb.EntryNormal}
+				}else {
+					//*标明当前有未处理的配置变化 
+					r.pendingConf = true
+				}
+			}
+		}
+		//*将消息添加到raftLog中
+		r.appendEntry(m.Entries...)
+		r.bcastAppend()
+		return
+	case pb.MsgReadIndex:
+		//*处理只读请求
+		//*检查集群是多节点还是单节点 
+		if r.quorum() > 1 {	
+			//*检查当前节点是否有提交过日志
+			if r.raftLog.zeroTermOnErrCompacted(r.raftLog.term(r.raftLog.committed)) != r.Term {
+				//*Raft 要求 Leader 提交当前任期的日志以证明其领导权（论文 Section 8）。
+			//*新 Leader 未提交日志，可能未被多数节点认可，读可能不安全。
+				return
+			}
+			switch r.readOnly.option {
+				case ReadOnlySafe:
+					//*把读请求到来时的committed索引保存下来
+				r.readOnly.addRequest(r.raftLog.committed, m)
+				//*广播消息出去，其中消息的CTX是该读请求的唯一标识
+				//*在应答是Context要原样返回，将使用这个ctx操作readOnly相关数据
+				r.bcastHeartbeatWithCtx(m.Entries[0].Data)
+case ReadOnlyLeaseBased:
+				var ri uint64
+				if r.checkQuorum {
+					ri = r.raftLog.committed
+				}
+				if m.From == None || m.From == r.id { // from local member
+					r.readStates = append(r.readStates, ReadState{Index: r.raftLog.committed, RequestCtx: m.Entries[0].Data})
+				} else {
+					r.send(pb.Message{To: m.From, Type: pb.MsgReadIndexResp, Index: ri, Entries: m.Entries})
+				}
+			
+			}
+		}
 
-func stepLeader(r *raft ,m pb.Message){
-	
+
+
 }
