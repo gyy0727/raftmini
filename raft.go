@@ -837,14 +837,14 @@ func stepLeader(r *raft, m pb.Message) {
 			r.logger.Warningf("%x stepped down to follower since quorum is not active", r.id)
 			r.becomeFollower(r.Term, None)
 		}
-	return 
+		return
 	case pb.MsgProp:
-		//*提交日志 
+		//*提交日志
 		if len(m.Entries) == 0 {
 			//*当前没有可以提交的日志
 		}
 		//*检查自己是否还在集群中
-		if _,ok = r.prs[r.id]; !ok {
+		if _, ok = r.prs[r.id]; !ok {
 			//*不在集群中,不在集群那就不能做出干扰集群的行为
 			return
 		}
@@ -853,15 +853,15 @@ func stepLeader(r *raft, m pb.Message) {
 			return
 		}
 		//*开始提交日志
-		for i ,e := range m.Entries {
+		for i, e := range m.Entries {
 			//*检查是否是配置变更
 			if e.Type == pb.EntryConfChange {
 				if r.pendingConf {
-					//*如果当前存在还没有处理的,则其他的配置先忽略掉 
+					//*如果当前存在还没有处理的,则其他的配置先忽略掉
 					r.logger.Infof("propose conf %s ignored since pending unapplied configuration", e)
 					m.Entries[i] = pb.Entry{Type: pb.EntryNormal}
-				}else {
-					//*标明当前有未处理的配置变化 
+				} else {
+					//*标明当前有未处理的配置变化
 					r.pendingConf = true
 				}
 			}
@@ -872,35 +872,330 @@ func stepLeader(r *raft, m pb.Message) {
 		return
 	case pb.MsgReadIndex:
 		//*处理只读请求
-		//*检查集群是多节点还是单节点 
-		if r.quorum() > 1 {	
+		//*检查集群是多节点还是单节点
+		if r.quorum() > 1 {
 			//*检查当前节点是否有提交过日志
+			//* NOTE 日志压缩错误
 			if r.raftLog.zeroTermOnErrCompacted(r.raftLog.term(r.raftLog.committed)) != r.Term {
 				//*Raft 要求 Leader 提交当前任期的日志以证明其领导权（论文 Section 8）。
-			//*新 Leader 未提交日志，可能未被多数节点认可，读可能不安全。
+				//*新 Leader 未提交日志，可能未被多数节点认可，读可能不安全。
 				return
 			}
 			switch r.readOnly.option {
-				case ReadOnlySafe:
-					//*把读请求到来时的committed索引保存下来
+			case ReadOnlySafe:
+				//*NOTE 详细了解
+				//*把读请求到来时的committed索引保存下来
 				r.readOnly.addRequest(r.raftLog.committed, m)
 				//*广播消息出去，其中消息的CTX是该读请求的唯一标识
 				//*在应答是Context要原样返回，将使用这个ctx操作readOnly相关数据
 				r.bcastHeartbeatWithCtx(m.Entries[0].Data)
-case ReadOnlyLeaseBased:
+			case ReadOnlyLeaseBased:
+				//* NOTE 详细了解租约模式
 				var ri uint64
 				if r.checkQuorum {
 					ri = r.raftLog.committed
 				}
-				if m.From == None || m.From == r.id { // from local member
+				if m.From == None || m.From == r.id {
 					r.readStates = append(r.readStates, ReadState{Index: r.raftLog.committed, RequestCtx: m.Entries[0].Data})
 				} else {
 					r.send(pb.Message{To: m.From, Type: pb.MsgReadIndexResp, Index: ri, Entries: m.Entries})
 				}
-			
+
 			}
+		} else {
+			r.readStates = append(r.readStates, ReadState{Index: r.raftLog.committed, RequestCtx: m.Entries[0].Data})
 		}
 
+		return
 
+	}
 
+	//*All other message types require a progress for m.From (pr).
+	//*检查消息发送者当前是否在集群中,避免受到其他废弃节点的干扰
+	pr, prOk := r.prs[m.From]
+	if !prOk {
+		r.logger.Debugf("%x no progress available for %x", r.id, m.From)
+		return
+	}
+
+	switch m.Type {
+	case pb.MsgAppResp:
+		//*处理append消息的应答
+		pr.RecentActive = true
+		//*如果是拒绝的消息
+		if m.Reject {
+			//* 如果拒绝了append消息，说明term、index不匹配
+			r.logger.Debugf("%x received msgApp rejection(lastindex: %d) from %x for index %d",
+				r.id, m.RejectHint, m.From, m.Index)
+			//*rejecthint带来的是拒绝该app请求的节点，其最大日志的索引
+			if pr.maybeDecrTo(m.Index, m.RejectHint) {
+				//*如果拒绝了append消息，那么就减小Next
+				r.logger.Debugf("%x decreased progress of %x to [%s]", r.id, m.From, pr)
+				if pr.State == ProgressStateReplicate {
+					//*如果是在复制状态，那么就将状态切换为探测状态
+					pr.becomeProbe()
+				}
+				//*重新发送append消息
+				r.sendAppend(m.From)
+			}
+		} else {
+			//*通过该append请求
+			oldPaused := pr.IsPaused()
+			if pr.maybeUpdate(m.Index) {
+				switch {
+				case pr.State == ProgressStateProbe:
+					//*如果当前该节点在探测状态，切换到可以接收副本状态
+					pr.becomeReplicate()
+				case pr.State == ProgressStateSnapshot && pr.needSnapshotAbort():
+					//*如果当前该接在在接受快照状态，而且已经快照数据同步完成了
+					r.logger.Debugf("%x snapshot aborted, resumed sending replication messages to %x [%s]", r.id, m.From, pr)
+					//*切换到探测状态
+					pr.becomeProbe()
+				case pr.State == ProgressStateReplicate:
+					//*如果当前该节点在接收副本状态，因为通过了该请求，所以滑动窗口可以释放在这之前的索引了
+					pr.ins.freeTo(m.Index)
+				}
+				if r.maybeCommit() {
+					//*如果可以commit日志，那么广播append消息
+					r.bcastAppend()
+				} else if oldPaused {
+					//*如果该节点之前状态是暂停，继续发送append消息给它
+					r.sendAppend(m.From)
+				}
+
+				if m.From == r.leadTransferee && pr.Match == r.raftLog.lastIndex() {
+					//*迁移过去的新leader，其日志已经追上了旧的leader
+					r.logger.Infof("%x sent MsgTimeoutNow to %x after received MsgAppResp", r.id, m.From)
+					r.sendTimeoutNow(m.From)
+				}
+			}
+
+		}
+	case pb.MsgHeartbeatResp:
+		//*该节点当前处于活跃状态
+		pr.RecentActive = true
+		//*这里调用resume是因为当前可能处于probe状态，而这个状态在两个heartbeat消息的间隔期只能收一条同步日志消息，因此在收到HB消息时就停止pause标记
+		pr.resume()
+
+		if pr.State == ProgressStateReplicate && pr.ins.full() {
+			pr.ins.freeFirstOne()
+		}
+		//*该节点的match节点小于当前最大日志索引，可能已经过期了，尝试添加日志
+		if pr.Match < r.raftLog.lastIndex() {
+			r.sendAppend(m.From)
+		}
+
+		//*只有readonly safe方案，才会继续往下走
+		if r.readOnly.option != ReadOnlySafe || len(m.Context) == 0 {
+			return
+		}
+
+		//*收到应答调用recvAck函数返回当前针对该消息已经应答的节点数量
+		ackCount := r.readOnly.recvAck(m)
+		if ackCount < r.quorum() {
+			//*小于集群半数以上就返回不往下走了
+			return
+		}
+
+		//*调用advance函数尝试丢弃已经被确认的read index状态
+		rss := r.readOnly.advance(m)
+		for _, rs := range rss { //*遍历准备被丢弃的readindex状态
+			req := rs.req
+			if req.From == None || req.From == r.id { // from local member
+				//*如果来自本地
+				r.readStates = append(r.readStates, ReadState{Index: rs.index, RequestCtx: req.Entries[0].Data})
+			} else {
+				//*否则就是来自外部，需要应答
+				r.send(pb.Message{To: req.From, Type: pb.MsgReadIndexResp, Index: rs.index, Entries: req.Entries})
+			}
+		}
+	case pb.MsgSnapStatus:
+		//*当前该节点状态已经不是在接受快照的状态了，直接返回
+		if pr.State != ProgressStateSnapshot {
+			return
+		}
+		if !m.Reject {
+			//*接收快照成功
+			pr.becomeProbe()
+			r.logger.Debugf("%x snapshot succeeded, resumed sending replication messages to %x [%s]", r.id, m.From, pr)
+		} else {
+			//*接收快照失败
+			pr.snapshotFailure()
+			pr.becomeProbe()
+			r.logger.Debugf("%x snapshot failed, resumed sending replication messages to %x [%s]", r.id, m.From, pr)
+		}
+		//*先暂停等待下一次被唤醒
+		pr.pause()
+	case pb.MsgUnreachable:
+		//*检测到节点不可达
+		if pr.State == ProgressStateReplicate {
+			pr.becomeProbe()
+		}
+		r.logger.Debugf("%x failed to send message to %x because it is unreachable [%s]", r.id, m.From, pr)
+		//*领导权转移
+	case pb.MsgTransferLeader:
+		leadTransferee := m.From
+		lastLeadTransferee := r.leadTransferee
+		if lastLeadTransferee != None {
+			//*判断是否已经有相同节点的leader转让流程在进行中
+			if lastLeadTransferee == leadTransferee {
+				r.logger.Infof("%x [term %d] transfer leadership to %x is in progress, ignores request to same node %x",
+					r.id, r.Term, leadTransferee, leadTransferee)
+				//*如果是，直接返回
+				return
+			}
+			//*否则中断之前的转让流程
+			r.abortLeaderTransfer()
+			r.logger.Infof("%x [term %d] abort previous transferring leadership to %x", r.id, r.Term, lastLeadTransferee)
+		}
+		//*判断是否转让过来的leader是否本节点，如果是也直接返回，因为本节点已经是leader了
+		if leadTransferee == r.id {
+			r.logger.Debugf("%x is already leader. Ignored transferring leadership to self", r.id)
+			return
+		}
+		r.logger.Infof("%x [term %d] starts to transfer leadership to %x", r.id, r.Term, leadTransferee)
+		r.electionElapsed = 0
+		r.leadTransferee = leadTransferee
+		if pr.Match == r.raftLog.lastIndex() {
+			//*如果日志已经匹配了，那么就发送timeoutnow协议过去
+			r.sendTimeoutNow(leadTransferee)
+			r.logger.Infof("%x sends MsgTimeoutNow to %x immediately as %x already has up-to-date log", r.id, leadTransferee, leadTransferee)
+		} else {
+			//*否则继续追加日志
+			r.sendAppend(leadTransferee)
+		}
+	}
+}
+
+// *处理候选人的状态机
+func stepCandidate(r *raft, m pb.Message) {
+	var myVoteRespType pb.MessageType
+	//*如果是预选举
+	if r.state == StatePreCandidate {
+		myVoteRespType = pb.MsgPreVoteResp
+	} else {
+		myVoteRespType = pb.MsgVoteResp
+	}
+
+	//*以下转换成follower状态时，为什么不判断消息的term是否至少大于当前节点的term？？？
+	switch m.Type {
+	//*探测状态
+	case pb.MsgProp:
+		r.logger.Infof("%x no leader at term %d; dropping proposal", r.id, r.Term)
+		return
+		//*添加日志的请求
+	case pb.MsgApp:
+		//*说明当前集群已经有领导者
+		//*转换成follower状态
+		r.becomeFollower(m.Term, m.From)
+		//*开始添加日志
+		r.handleAppendEntries(m)
+	case pb.MsgHeartbeat:
+		//*说明当前集群已经有领导者
+		//*转换成follower状态
+		r.becomeFollower(m.Term, m.From)
+		//*开始处理心跳消息
+		r.handleHeartbeat(m)
+	case pb.MsgSnap:
+		//*说明当前集群已经有领导者
+		//*转换成follower状态
+		r.becomeFollower(m.Term, m.From)
+		//*开始处理快照消息
+		r.handleSnapshot(m)
+	case myVoteRespType:
+		//*计算当前集群中有多少节点给自己投了票
+		gr := r.poll(m.From, m.Type, !m.Reject)
+		r.logger.Infof("%x [quorum:%d] has received %d %s votes and %d vote rejections", r.id, r.quorum(), gr, m.Type, len(r.votes)-gr)
+		switch r.quorum() {
+		case gr: //*如果进行投票的节点数量正好是半数以上节点数量
+			if r.state == StatePreCandidate {
+				//*开始竞选
+				r.campaign(campaignElection)
+			} else {
+				//*变成leader,因为当前分支当前节点的状态就是候选人,而且已经投票完成
+				r.becomeLeader()
+				r.bcastAppend()
+				//*广播添加日志的请求
+			}
+		case len(r.votes) - gr: //*如果是半数以上节点拒绝了投票
+			//*变成follower
+			r.becomeFollower(r.Term, None)
+		}
+	case pb.MsgTimeoutNow:
+		//*忽略不处理当前指令
+		r.logger.Infof("%x [term %d state %v] ignored MsgTimeoutNow from %x [term %d]", r.id, r.Term, r.state, m.From, m.Term)
+
+	}
+}
+
+// *处理follower状态机
+func stepFollower(r *raft, m pb.Message) {
+	switch m.Type {
+	case pb.MsgProp:
+		//*本节点提交的值,探测leader
+		if r.lead == None {
+			//*没有leader则提交失败，忽略,因为追随者只会探测leader
+			r.logger.Infof("%x no leader at term %d; dropping proposal", r.id, r.Term)
+			return
+		}
+		//*向leader进行redirect
+		m.To = r.lead
+		r.send(m)
+	case pb.MsgApp:
+		//*处理append消息
+		//*收到leader的app消息，重置选举tick计时器，因为这样证明leader还存活
+		r.electionElapsed = 0
+		r.lead = m.From
+		r.handleAppendEntries(m)
+	case pb.MsgHeartbeat:
+		//*处理心跳消息
+		r.electionElapsed = 0
+		r.lead = m.From
+		r.handleHeartbeat(m)
+	case pb.MsgSnap:
+		//*处理快照消息
+		r.electionElapsed = 0
+		r.lead = m.From
+		r.handleSnapshot(m)
+	case pb.MsgTransferLeader:
+		//*处理leader转让消息
+		//*NOTE Raft 论文规定领导权转移必须由当前 Leader 发起（见论文 6.4 节）
+		if r.lead == None {
+			r.logger.Infof("%x no leader at term %d; dropping leader transfer msg", r.id, r.Term)
+			return
+		}
+		m.To = r.lead
+		r.send(m)
+	case pb.MsgTimeoutNow:
+		//*处理超时消息
+		//*由 Leader 主动发送给目标节点
+		//*强制目标节点立即发起选举（跳过选举超时等待）
+		//*用于加速领导权转移流程
+		if r.promotable() {
+			//*如果本节点可以提升为leader，那么就发起新一轮的竞选
+			r.logger.Infof("%x [term %d] received MsgTimeoutNow from %x and starts an election to get leadership.", r.id, r.Term, m.From)
+			//*timeout消息用在leader转让中，所以不需要prevote即使开了这个选项
+			r.campaign(campaignTransfer)
+		} else {
+			r.logger.Infof("%x received MsgTimeoutNow from %x but is not promotable", r.id, m.From)
+		}
+	case pb.MsgReadIndex:
+		if r.lead == None {
+			r.logger.Infof("%x no leader at term %d; dropping index reading msg", r.id, r.Term)
+			return
+		}
+		//*只读请求
+		//*向leader转发此类型消息
+		m.To = r.lead
+		r.send(m)
+	case pb.MsgReadIndexResp:
+		//*来自于leader的响应
+		if len(m.Entries) != 1 {
+			r.logger.Errorf("%x invalid format of MsgReadIndexResp from %x, entries count: %d", r.id, m.From, len(m.Entries))
+			return
+		}
+		//*更新readstates数组
+		r.readStates = append(r.readStates, ReadState{Index: m.Index, RequestCtx: m.Entries[0].Data})
+
+	}
 }
