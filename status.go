@@ -19,16 +19,19 @@ func getStatus(r *raft) Status {
 	s := Status{ID: r.id}
 	s.HardState = r.hardState()
 	s.SoftState = *r.softState()
+
 	s.Applied = r.raftLog.applied
-	//*如果是leader节点
+
 	if s.RaftState == StateLeader {
 		s.Progress = make(map[uint64]Progress)
 		for id, p := range r.prs {
 			s.Progress[id] = *p
 		}
 	}
+
 	return s
 }
+
 
 // *将状态信息转换为json格式
 func (s Status) MarshalJSON() ([]byte, error) {

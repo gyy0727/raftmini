@@ -225,7 +225,7 @@ func newRaft(c *Config) *raft {
 	if err := c.validate(); err != nil {
 		panic(err.Error())
 	}
-	raftLog := newLog(c.Storage, c.Logger)
+	raftlog := newLog(c.Storage, c.Logger)
 	hs, cs, err := c.Storage.InitialState()
 	if err != nil {
 		//*检查初始化是否出问题了
@@ -245,7 +245,7 @@ func newRaft(c *Config) *raft {
 	r := &raft{
 		id:               c.ID,
 		lead:             None,
-		raftLog:          raftLog,
+		raftLog:          raftlog,
 		maxMsgSize:       c.MaxSizePerMsg,
 		maxInflight:      c.MaxInflightMsgs,
 		prs:              make(map[uint64]*Progress),
@@ -536,7 +536,7 @@ func (r *raft) tickHeartbeat() {
 	if r.electionElapsed >= r.electionTimeout {
 		r.electionElapsed = 0
 		if r.checkQuorum {
-			r.step(pb.Message{From: r.id, Type: pb.MsgCheckQuorum})
+			r.Step(pb.Message{From: r.id, Type: pb.MsgCheckQuorum})
 		}
 		if r.state == StateLeader && r.leadTransferee != None {
 			//*当前在迁移leader的流程，但是过了选举超时新的leader还没有产生，那么旧的leader重新成为leader
@@ -844,7 +844,7 @@ func stepLeader(r *raft, m pb.Message) {
 			//*当前没有可以提交的日志
 		}
 		//*检查自己是否还在集群中
-		if _, ok = r.prs[r.id]; !ok {
+		if _, ok := r.prs[r.id]; !ok {
 			//*不在集群中,不在集群那就不能做出干扰集群的行为
 			return
 		}
@@ -1198,4 +1198,188 @@ func stepFollower(r *raft, m pb.Message) {
 		r.readStates = append(r.readStates, ReadState{Index: m.Index, RequestCtx: m.Entries[0].Data})
 
 	}
+}
+
+// *添加日志
+func (r *raft) handleAppendEntries(m pb.Message) {
+	//*检查消息的合法性
+	if m.Index < r.raftLog.committed {
+		//*已经提交过了
+		//*进度同步：帮助 Leader 快速更新该 Follower 的 matchIndex（论文 5.3 节）
+		//*避免重复传输：防止 Leader 重复发送已确认的日志条目
+		//*网络优化：减少无效日志传输（已提交日志无需再次确认）
+		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: r.raftLog.committed})
+		return
+	}
+	r.logger.Infof("%x -> %x index %d", m.From, r.id, m.Index)
+	if mlastIndex, ok := r.raftLog.maybeAppend(m.Index, m.LogTerm, m.Commit, m.Entries...); ok {
+		//*添加成功，返回的index是添加成功之后的最大index
+		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: mlastIndex})
+	} else {
+		//*添加失败
+		r.logger.Debugf("%x [logterm: %d, index: %d] rejected msgApp [logterm: %d, index: %d] from %x",
+			r.id, r.raftLog.zeroTermOnErrCompacted(r.raftLog.term(m.Index)), m.Index, m.LogTerm, m.Index, m.From)
+		//*添加失败的时候，返回的Index是传入过来的Index，RejectHint是该节点当前日志的最后索引
+		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: m.Index, Reject: true, RejectHint: r.raftLog.lastIndex()})
+	}
+}
+
+func (r *raft) handleHeartbeat(m pb.Message) {
+	r.raftLog.commitTo(m.Commit)
+	//*要把HB消息带过来的context原样返回
+	r.send(pb.Message{To: m.From, Type: pb.MsgHeartbeatResp, Context: m.Context})
+}
+
+func (r *raft) handleSnapshot(m pb.Message) {
+	sindex, sterm := m.Snapshot.Metadata.Index, m.Snapshot.Metadata.Term
+	//*注意这里成功与失败，只是返回的Index参数不同
+	if r.restore(m.Snapshot) {
+		r.logger.Infof("%x [commit: %d] restored snapshot [index: %d, term: %d]",
+			r.id, r.raftLog.committed, sindex, sterm)
+		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: r.raftLog.lastIndex()})
+	} else {
+		r.logger.Infof("%x [commit: %d] ignored snapshot [index: %d, term: %d]",
+			r.id, r.raftLog.committed, sindex, sterm)
+		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: r.raftLog.committed})
+	}
+}
+
+// *使用快照进行恢复 ,接受leader的快照数据
+func (r *raft) restore(s pb.Snapshot) bool {
+	//*首先判断快照索引的合法性
+	if s.Metadata.Index <= r.raftLog.committed {
+		return false
+	}
+	//*检查快照中的数据是不是已经被提交到本地
+	if r.raftLog.matchTerm(s.Metadata.Index, s.Metadata.Term) {
+		r.logger.Infof("%x [commit: %d, lastindex: %d, lastterm: %d] fast-forwarded commit to snapshot [index: %d, term: %d]",
+			r.id, r.raftLog.committed, r.raftLog.lastIndex(), r.raftLog.lastTerm(), s.Metadata.Index, s.Metadata.Term)
+		//*提交到快照所在的索引
+		r.raftLog.commitTo(s.Metadata.Index)
+		//*为什么这里返回false？
+		return false
+	}
+	r.logger.Infof("%x [commit: %d, lastindex: %d, lastterm: %d] starts to restore snapshot [index: %d, term: %d]",
+		r.id, r.raftLog.committed, r.raftLog.lastIndex(), r.raftLog.lastTerm(), s.Metadata.Index, s.Metadata.Term)
+
+	r.raftLog.restore(s)
+	r.prs = make(map[uint64]*Progress)
+	//*包括集群中其他节点的状态也使用快照中的状态数据进行恢复
+	for _, n := range s.Metadata.ConfState.Nodes {
+		match, next := uint64(0), r.raftLog.lastIndex()+1
+		if n == r.id {
+			match = next - 1
+		}
+		r.setProgress(n, match, next)
+		r.logger.Infof("%x restored progress of %x [%s]", r.id, n, r.prs[n])
+	}
+	return true
+}
+
+// *返回是否可以被提升为leader
+func (r *raft) promotable() bool {
+	//*在prs数组中找到本节点，说明该节点在集群中，这就具备了可以被选为leader的条件
+	_, ok := r.prs[r.id]
+	return ok
+}
+
+// *增加一个节点
+func (r *raft) addNode(id uint64) {
+	//*重置pengdingConf标志位
+	r.pendingConf = false
+	//*检查是否已经存在节点列表中
+	if _, ok := r.prs[id]; ok {
+		return
+	}
+	//*这里才真的添加进来
+	r.setProgress(id, 0, r.raftLog.lastIndex()+1)
+}
+
+// *删除一个节点
+func (r *raft) removeNode(id uint64) {
+	r.delProgress(id)
+	//*重置pengdingConf标志位
+	r.pendingConf = false
+	if len(r.prs) == 0 {
+		return
+	}
+	//*由于删除了节点，所以半数节点的数量变少了，于是去查看是否有可以认为提交成功的数据
+	if r.maybeCommit() {
+		r.bcastAppend()
+	}
+	if r.state == StateLeader && r.leadTransferee == id {
+		//*如果在leader迁移过程中发生了删除节点的操作，那么中断迁移leader流程
+		r.abortLeaderTransfer()
+	}
+}
+
+func (r *raft) resetPendingConf() { r.pendingConf = false }
+
+func (r *raft) setProgress(id, match, next uint64) {
+	r.prs[id] = &Progress{Next: next, Match: match, ins: newInflights(r.maxInflight)}
+}
+
+func (r *raft) delProgress(id uint64) {
+	delete(r.prs, id)
+}
+
+func (r *raft) loadState(state pb.HardState) {
+	if state.Commit < r.raftLog.committed || state.Commit > r.raftLog.lastIndex() {
+		r.logger.Panicf("%x state.commit %d is out of range [%d, %d]", r.id, state.Commit, r.raftLog.committed, r.raftLog.lastIndex())
+	}
+	r.raftLog.committed = state.Commit
+	r.Term = state.Term
+	r.Vote = state.Vote
+}
+
+//*判断选举计时器是否超时
+
+func (r *raft) pastElectionTimeout() bool {
+	return r.electionElapsed >= r.randomizedElectionTimeout
+}
+
+// *重置选举超时时间为 [T, 2T) 的随机值
+func (r *raft) resetRandomizedElectionTimeout() {
+	r.randomizedElectionTimeout = r.electionTimeout + globalRand.Intn(r.electionTimeout)
+}
+
+// *检查法定人数是否活跃
+func (r *raft) checkQuorumActive() bool {
+	var act int
+
+	for id := range r.prs {
+		if id == r.id { // self is always active
+			act++
+			continue
+		}
+		//*检查是否活跃
+		if r.prs[id].RecentActive {
+			act++
+		}
+		//*如果活跃,置为不活跃
+		r.prs[id].RecentActive = false
+	}
+
+	return act >= r.quorum()
+}
+
+// *强制达到超时时间
+func (r *raft) sendTimeoutNow(to uint64) {
+	r.send(pb.Message{To: to, Type: pb.MsgTimeoutNow})
+}
+
+// *中断leader迁移
+func (r *raft) abortLeaderTransfer() {
+	r.leadTransferee = None
+}
+
+// *检查日志数组中配置变更类型的日志的数量
+func numOfPendingConf(ents []pb.Entry) int {
+	n := 0
+	for i := range ents {
+		if ents[i].Type == pb.EntryConfChange {
+			n++
+		}
+	}
+	return n
 }

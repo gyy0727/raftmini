@@ -275,6 +275,8 @@ func (in *inflights) freeTo(to uint64) {
 	}
 }
 
+func (in *inflights) freeFirstOne() { in.freeTo(in.buffer[in.start]) }
+
 //**返回inflights是否已满
 func (in *inflights) full() bool {
 	return in.count == in.size
