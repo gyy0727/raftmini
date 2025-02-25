@@ -30,7 +30,7 @@ type SoftState struct {
 }
 
 // *比较两个SoftState是否相等
-func (a SoftState) equal(b SoftState) bool {
+func (a SoftState) equal(b *SoftState) bool {
 	return a.Lead == b.Lead && a.RaftState == b.RaftState
 }
 
@@ -362,4 +362,151 @@ func (n *node) run(r *raft) {
 			return
 		}
 	}
+}
+
+func (n *node) Tick() {
+	select {
+	//*向tick channel写入空数据，唤醒之
+	case n.tickc <- struct{}{}:
+	case <-n.done:
+	default:
+		n.logger.Warningf("A tick missed to fire. Node blocks too long!")
+	}
+}
+
+func (n *node) Campaign(ctx context.Context) error { return n.step(ctx, pb.Message{Type: pb.MsgHup}) }
+
+// *将客户端数据打包成Raft提案，提交给当前Leader节点进行一致性复制
+func (n *node) Propose(ctx context.Context, data []byte) error {
+	return n.step(ctx, pb.Message{Type: pb.MsgProp, Entries: []pb.Entry{{Data: data}}})
+}
+
+// *提交集群配置变更请求（节点增删）
+func (n *node) Step(ctx context.Context, m pb.Message) error {
+	//*过滤网络消息，只处理来自其他节点的Raft协议消息（AppendEntries/Vote等），丢弃节点自身生成的本地消息（心跳/选举）
+	if IsLocalMsg(m.Type) {
+		return nil
+	}
+	return n.step(ctx, m)
+
+}
+
+
+func (n *node) ProposeConfChange(ctx context.Context, cc pb.ConfChange) error {
+	data, err := cc.Marshal()
+	if err != nil {
+		return err
+	}
+	return n.Step(ctx, pb.Message{Type: pb.MsgProp, Entries: []pb.Entry{{Type: pb.EntryConfChange, Data: data}}})
+}
+
+// *将Raft消息路由到不同处理通道：提案消息（MsgProp）进入propc通道由主状态机处理
+// *其他消息进入recvc通道由常规流程处理，实现消息分类和优先级调度
+func (n *node) step(ctx context.Context, m pb.Message) error {
+	ch := n.recvc
+	if m.Type == pb.MsgProp {
+		ch = n.propc
+	}
+
+	select {
+	case ch <- m:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-n.done:
+		return ErrStopped
+	}
+}
+
+func (n *node) Ready() <-chan Ready { return n.readyc }
+
+func (n *node) Advance() {
+	select {
+	case n.advancec <- struct{}{}:
+	case <-n.done:
+	}
+}
+
+// *应用配置更新，返回当前配置状态
+func (n *node) ApplyConfChange(cc pb.ConfChange) *pb.ConfState {
+	var cs pb.ConfState
+	select {
+	//*向配置更新channel写入要更新的配置
+	case n.confc <- cc:
+	case <-n.done:
+	}
+	select {
+	//*等待最新的配置状态返回
+	case cs = <-n.confstatec:
+	case <-n.done:
+	}
+	return &cs
+}
+
+func (n *node) Status() Status {
+	c := make(chan Status)
+	select {
+	case n.status <- c:
+		return <-c
+	case <-n.done:
+		return Status{}
+	}
+}
+
+// *将某个节点不可达的消息传入通道
+func (n *node) ReportUnreachable(id uint64) {
+	select {
+	case n.recvc <- pb.Message{Type: pb.MsgUnreachable, From: id}:
+	case <-n.done:
+	}
+}
+
+// *向Raft状态机报告快照传输结果
+func (n *node) ReportSnapshot(id uint64, status SnapshotStatus) {
+	rej := status == SnapshotFailure
+
+	select {
+	case n.recvc <- pb.Message{Type: pb.MsgSnapStatus, From: id, Reject: rej}:
+	case <-n.done:
+	}
+}
+
+// *触发领导权转移流程
+func (n *node) TransferLeadership(ctx context.Context, lead, transferee uint64) {
+	select {
+	case n.recvc <- pb.Message{Type: pb.MsgTransferLeader, From: transferee, To: lead}:
+	case <-n.done:
+	case <-ctx.Done():
+	}
+}
+
+// *触发线性一致读流程：Leader记录当前commit index，向多数节点发起心跳确认领导权有效后
+// *返回该索引值给客户端，确保后续读操作不会返回过期数据
+func (n *node) ReadIndex(ctx context.Context, rctx []byte) error {
+	return n.step(ctx, pb.Message{Type: pb.MsgReadIndex, Entries: []pb.Entry{{Data: rctx}}})
+}
+
+func newReady(r *raft, prevSoftSt *SoftState, prevHardSt pb.HardState) Ready {
+	rd := Ready{
+		//*entries保存的是没有持久化的数据数组
+		Entries: r.raftLog.unstableEntries(),
+		//*保存committed但是还没有applied的数据数组
+		CommittedEntries: r.raftLog.nextEnts(),
+		//*保存待发送的消息
+		Messages: r.msgs,
+	}
+	if softSt := r.softState(); !softSt.equal(prevSoftSt) {
+		rd.SoftState = softSt
+	}
+	if hardSt := r.hardState(); !isHardStateEqual(hardSt, prevHardSt) {
+		rd.HardState = hardSt
+	}
+	if r.raftLog.unstable.snapshot != nil {
+		//*如果未持久化的快照数据存在，也需要返回去
+		rd.Snapshot = *r.raftLog.unstable.snapshot
+	}
+	if len(r.readStates) != 0 {
+		rd.ReadStates = r.readStates
+	}
+	return rd
 }
