@@ -1,4 +1,4 @@
-package raftexample
+package main
 import (
 	"bytes"
 	"encoding/gob"
