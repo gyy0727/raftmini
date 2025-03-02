@@ -6,6 +6,11 @@ import (
 	"path"
 
 	"github.com/coreos/etcd/pkg/fileutil"
+	"go.uber.org/zap"
+)
+
+var (
+	logger, _ = zap.NewDevelopment()
 )
 
 // *实现了一个预分配磁盘空间的文件管道，专门用于高效管理WAL（预写式日志）的文件创建
@@ -62,7 +67,9 @@ func (fp *filePipeline) alloc() (f *fileutil.LockedFile, err error) {
 	}
 	//* 预分配磁盘空间（关键性能优化）
 	if err = fileutil.Preallocate(f.File, fp.size, true); err != nil {
-		plog.Errorf("failed to allocate space when creating new wal file (%v)", err)
+		logger.Error("failed to allocate space when creating new WAL file",
+			zap.Error(err),
+		)
 		f.Close()
 		return nil, err
 	}
@@ -74,14 +81,14 @@ func (fp *filePipeline) run() {
 	//*函数退出时关闭错误通道（关键可靠性保障）
 	defer close(fp.errc)
 	for {
-		//*预分配 
+		//*预分配
 		f, err := fp.alloc()
 		if err != nil {
 			fp.errc <- err
 			return
 		}
 		select {
-			//*存入通道 
+		//*存入通道
 		case fp.filec <- f:
 		case <-fp.donec:
 			os.Remove(f.Name())
