@@ -3,9 +3,11 @@ module github.com/gyy0727/raftmini
 go 1.24.0
 
 require (
+	github.com/coreos/etcd v3.3.27+incompatible
 	github.com/coreos/pkg v0.0.0-20240122114842-bbd7aa9bf6fb
 	github.com/golang/protobuf v1.5.4
 	github.com/prometheus/client_golang v1.21.0
+	go.uber.org/zap v1.27.0
 	golang.org/x/net v0.35.0
 )
 
@@ -17,6 +19,7 @@ require (
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.62.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
+	go.uber.org/multierr v1.10.0 // indirect
 	golang.org/x/sys v0.30.0 // indirect
 	google.golang.org/protobuf v1.36.1 // indirect
 )
