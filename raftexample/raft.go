@@ -10,16 +10,14 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/coreos/etcd/pkg/fileutil"
 	"github.com/coreos/etcd/pkg/types"
 	"github.com/coreos/etcd/raft"
 	"github.com/coreos/etcd/raft/raftpb"
 	"github.com/coreos/etcd/rafthttp"
 	"github.com/coreos/etcd/snap"
 	"github.com/coreos/etcd/wal"
-	"github.com/coreos/etcd/wal/walpb"
-	"go.etcd.io/etcd/etcdserver/stats"
-	"go.uber.org/zap"
+	"github.com/gyy0727/raftmini/wal/walpb"
+	"github.com/gyy0727/raftmini/pkg/stats"
 	"golang.org/x/net/context"
 )
 
@@ -242,46 +240,41 @@ func (rc *raftNode) writeError(err error) {
 
 // *启动raft
 func (rc *raftNode) startRaft() {
-	if !fileutil.Exist(rc.snapdir) {
-		if err := os.Mkdir(rc.snapdir, 0o750); err != nil {
-			log.Fatalf("raftexample: cannot create dir for snapshot (%v)", err)
-		}
-	}
-	rc.snapshotter = snap.New(zap.NewExample(), rc.snapdir)
-
 	oldwal := wal.Exist(rc.waldir)
 	rc.wal = rc.replayWAL()
-
-	// signal replay has finished
-	rc.snapshotterReady <- rc.snapshotter
 
 	rpeers := make([]raft.Peer, len(rc.peers))
 	for i := range rpeers {
 		rpeers[i] = raft.Peer{ID: uint64(i + 1)}
 	}
 	c := &raft.Config{
-		ID:                        uint64(rc.id),
-		ElectionTick:              10,
-		HeartbeatTick:             1,
-		Storage:                   rc.raftStorage,
-		MaxSizePerMsg:             1024 * 1024,
-		MaxInflightMsgs:           256,
-		MaxUncommittedEntriesSize: 1 << 30,
+		ID:              uint64(rc.id),
+		ElectionTick:    10,
+		HeartbeatTick:   1,
+		Storage:         rc.raftStorage,
+		MaxSizePerMsg:   1024 * 1024,
+		MaxInflightMsgs: 256,
 	}
 
-	if oldwal || rc.join {
+	if oldwal {
 		rc.node = raft.RestartNode(c)
 	} else {
-		rc.node = raft.StartNode(c, rpeers)
+		startPeers := rpeers
+		if rc.join {
+			startPeers = nil
+		}
+		rc.node = raft.StartNode(c, startPeers)
 	}
 
+	ss := &stats.ServerStats{}
+	ss.Initialize()
+
 	rc.transport = &rafthttp.Transport{
-		Logger:      rc.logger,
 		ID:          types.ID(rc.id),
 		ClusterID:   0x1000,
 		Raft:        rc,
-		ServerStats: stats.NewServerStats("", ""),
-		LeaderStats: stats.NewLeaderStats(zap.NewExample(), strconv.Itoa(rc.id)),
+		ServerStats: ss,
+		LeaderStats: stats.NewLeaderStats(strconv.Itoa(rc.id)),
 		ErrorC:      make(chan error),
 	}
 
