@@ -11,13 +11,13 @@ import (
 	"net/url"
 
 	"github.com/coreos/etcd/pkg/types"
-	"github.com/coreos/etcd/raft"
-	"github.com/coreos/etcd/raft/raftpb"
 	"github.com/coreos/etcd/rafthttp"
-	"github.com/coreos/etcd/snap"
-	"github.com/coreos/etcd/wal"
-	"github.com/gyy0727/raftmini/wal/walpb"
+	raft "github.com/gyy0727/raftmini"
+	"github.com/gyy0727/raftmini/pkg/snap"
 	"github.com/gyy0727/raftmini/pkg/stats"
+	"github.com/gyy0727/raftmini/raftpb"
+	"github.com/gyy0727/raftmini/wal"
+	"github.com/gyy0727/raftmini/wal/walpb"
 	"golang.org/x/net/context"
 )
 

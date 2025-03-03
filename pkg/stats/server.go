@@ -26,32 +26,29 @@ import (
 // ServerStats encapsulates various statistics about an EtcdServer and its
 // communication with other members of the cluster
 type ServerStats struct {
-	Name string `json:"name"`
-	
-	ID        string         `json:"id"`
-	State     raft.StateType `json:"state"`
-	StartTime time.Time      `json:"startTime"`
-
+	Name       string         `json:"name"`      //*节点名称
+	ID         string         `json:"id"`        //*节点raftid
+	State      raft.StateType `json:"state"`     //*节点状态
+	StartTime  time.Time      `json:"startTime"` //*节点启动时间
 	LeaderInfo struct {
-		Name      string    `json:"leader"`
-		Uptime    string    `json:"uptime"`
-		StartTime time.Time `json:"startTime"`
+		Name      string    `json:"leader"`    //*leader名称
+		Uptime    string    `json:"uptime"`    //*leader运行时间
+		StartTime time.Time `json:"startTime"` //*leader启动时间
 	} `json:"leaderInfo"`
 
-	RecvAppendRequestCnt uint64  `json:"recvAppendRequestCnt,"`
-	RecvingPkgRate       float64 `json:"recvPkgRate,omitempty"`
-	RecvingBandwidthRate float64 `json:"recvBandwidthRate,omitempty"`
-
-	SendAppendRequestCnt uint64  `json:"sendAppendRequestCnt"`
-	SendingPkgRate       float64 `json:"sendPkgRate,omitempty"`
-	SendingBandwidthRate float64 `json:"sendBandwidthRate,omitempty"`
-
-	sendRateQueue *statsQueue
-	recvRateQueue *statsQueue
+	RecvAppendRequestCnt uint64      `json:"recvAppendRequestCnt,"`       //*接受到的append请求的计数
+	RecvingPkgRate       float64     `json:"recvPkgRate,omitempty"`       //*接收速率
+	RecvingBandwidthRate float64     `json:"recvBandwidthRate,omitempty"` //*接收带宽速率
+	SendAppendRequestCnt uint64      `json:"sendAppendRequestCnt"`        //*发送的 Append 请求计数
+	SendingPkgRate       float64     `json:"sendPkgRate,omitempty"`       //*发送速率
+	SendingBandwidthRate float64     `json:"sendBandwidthRate,omitempty"` //*发送宽带速率速率
+	sendRateQueue        *statsQueue //*用于计算发送的队列
+	recvRateQueue        *statsQueue //*用与计算接收的队列
 
 	sync.Mutex
 }
 
+// *将 ServerStats 结构体序列化为 JSON 格式
 func (ss *ServerStats) JSON() []byte {
 	ss.Lock()
 	stats := *ss
@@ -60,14 +57,13 @@ func (ss *ServerStats) JSON() []byte {
 	stats.SendingPkgRate, stats.SendingBandwidthRate = stats.SendRates()
 	stats.RecvingPkgRate, stats.RecvingBandwidthRate = stats.RecvRates()
 	b, err := json.Marshal(stats)
-	// TODO(jonboulle): appropriate error handling?
 	if err != nil {
 		log.Printf("stats: error marshalling server stats: %v", err)
 	}
 	return b
 }
 
-// Initialize clears the statistics of ServerStats and resets its start time
+// *初始化 ServerStats，重置启动时间和 Leader 信息，并初始化发送和接收速率队列
 func (ss *ServerStats) Initialize() {
 	if ss == nil {
 		return
@@ -83,18 +79,17 @@ func (ss *ServerStats) Initialize() {
 	}
 }
 
-// RecvRates calculates and returns the rate of received append requests
+//*计算并返回接收速率
 func (ss *ServerStats) RecvRates() (float64, float64) {
 	return ss.recvRateQueue.Rate()
 }
 
-// SendRates calculates and returns the rate of sent append requests
+//*计算并返回发送速率
 func (ss *ServerStats) SendRates() (float64, float64) {
 	return ss.sendRateQueue.Rate()
 }
 
-// RecvAppendReq updates the ServerStats in response to an AppendRequest
-// from the given leader being received
+
 func (ss *ServerStats) RecvAppendReq(leader string, reqSize int) {
 	ss.Lock()
 	defer ss.Unlock()
@@ -116,8 +111,7 @@ func (ss *ServerStats) RecvAppendReq(leader string, reqSize int) {
 	ss.RecvAppendRequestCnt++
 }
 
-// SendAppendReq updates the ServerStats in response to an AppendRequest
-// being sent by this server
+
 func (ss *ServerStats) SendAppendReq(reqSize int) {
 	ss.Lock()
 	defer ss.Unlock()

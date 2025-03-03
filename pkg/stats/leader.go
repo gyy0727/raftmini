@@ -27,7 +27,6 @@ import (
 // statistics about communication with its followers
 type LeaderStats struct {
 	// Leader is the ID of the leader in the etcd cluster.
-	// TODO(jonboulle): clarify that these are IDs, not names
 	Leader    string                    `json:"leader"`
 	Followers map[string]*FollowerStats `json:"followers"`
 
@@ -47,7 +46,7 @@ func (ls *LeaderStats) JSON() []byte {
 	stats := *ls
 	ls.Unlock()
 	b, err := json.Marshal(stats)
-	// TODO(jonboulle): appropriate error handling?
+
 	if err != nil {
 		logger.Error("error marshalling leader stats (%v)", zap.Error(err))
 	}
