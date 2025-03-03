@@ -5,13 +5,10 @@ import (
 	"os"
 	"path"
 
-	"github.com/coreos/etcd/pkg/fileutil"
+	"github.com/gyy0727/raftmini/pkg/fileutil"
 	"go.uber.org/zap"
 )
 
-var (
-	logger, _ = zap.NewDevelopment()
-)
 
 // *实现了一个预分配磁盘空间的文件管道，专门用于高效管理WAL（预写式日志）的文件创建
 type filePipeline struct {
