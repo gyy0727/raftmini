@@ -9,7 +9,7 @@ import (
 type Status struct {
 	ID           uint64              //*节点ID
 	pb.HardState                     //*节点硬状态
-	SoftState         //*节点软状态
+	SoftState                        //*节点软状态
 	Applied      uint64              //*已经应用到状态机的日志索引
 	Progress     map[uint64]Progress //*节点的进度信息
 }
@@ -31,7 +31,6 @@ func getStatus(r *raft) Status {
 
 	return s
 }
-
 
 // *将状态信息转换为json格式
 func (s Status) MarshalJSON() ([]byte, error) {
