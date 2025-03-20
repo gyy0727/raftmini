@@ -135,9 +135,8 @@ func (l *raftLog) nextEnts() (ents []pb.Entry) {
 	return nil
 }
 
-// *hasNextEnts returns if there is any available entries for execution. This
-// *is a fast check without heavy raftLog.slice() in raftLog.nextEnts().
-// *这个函数的功能跟前面nextEnts类似，只不过这个函数做判断而不返回实际数据
+
+// *检查是否有已经提交但尚未应用的日志条目,做判断而不返回实际数据
 func (l *raftLog) hasNextEnts() bool {
 	off := max(l.applied+1, l.firstIndex())
 	return l.committed+1 > off
@@ -182,7 +181,7 @@ func (l *raftLog) lastIndex() uint64 {
 
 // *将raftlog的commit索引，修改为tocommit
 func (l *raftLog) commitTo(tocommit uint64) {
-	//*never decrease commit
+
 	//*首先需要判断，commit索引绝不能变小
 	if l.committed < tocommit {
 		if l.lastIndex() < tocommit {
@@ -224,7 +223,6 @@ func (l *raftLog) lastTerm() uint64 {
 
 // *返回index为i的term
 func (l *raftLog) term(i uint64) (uint64, error) {
-	//*the valid term range is [index of dummy entry, last index]
 	dummyIndex := l.firstIndex() - 1
 	//*先判断范围是否正确
 	if i < dummyIndex || i > l.lastIndex() {

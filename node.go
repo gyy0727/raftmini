@@ -25,8 +25,8 @@ var (
 // **软状态是异变的，包括：当前集群leader、当前节点状态
 // **这部分数据不需要存储到持久化中
 type SoftState struct {
-	Lead      uint64 //*需要保持原子性访问
-	RaftState StateType
+	Lead      uint64    //*需要保持原子性访问
+	RaftState StateType //*当前节点状态
 }
 
 // *比较两个SoftState是否相等
@@ -390,7 +390,6 @@ func (n *node) Step(ctx context.Context, m pb.Message) error {
 	return n.step(ctx, m)
 
 }
-
 
 func (n *node) ProposeConfChange(ctx context.Context, cc pb.ConfChange) error {
 	data, err := cc.Marshal()

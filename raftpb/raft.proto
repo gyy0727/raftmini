@@ -82,14 +82,14 @@ enum MessageType {
 }
 
 message Message {
-	optional MessageType type        = 1  [(gogoproto.nullable) = false];
-	optional uint64      to          = 2  [(gogoproto.nullable) = false];
-	optional uint64      from        = 3  [(gogoproto.nullable) = false];
-	optional uint64      term        = 4  [(gogoproto.nullable) = false];
-	optional uint64      logTerm     = 5  [(gogoproto.nullable) = false];
-	optional uint64      index       = 6  [(gogoproto.nullable) = false];
-	repeated Entry       entries     = 7  [(gogoproto.nullable) = false];
-	optional uint64      commit      = 8  [(gogoproto.nullable) = false];
+	optional MessageType type        = 1  [(gogoproto.nullable) = false]; //*消息类型
+	optional uint64      to          = 2  [(gogoproto.nullable) = false]; //*消息接受者
+	optional uint64      from        = 3  [(gogoproto.nullable) = false]; //*消息发送者
+	optional uint64      term        = 4  [(gogoproto.nullable) = false]; //*leader任期
+	optional uint64      logTerm     = 5  [(gogoproto.nullable) = false]; //*日志对应的任期
+	optional uint64      index       = 6  [(gogoproto.nullable) = false]; //*日志索引
+	repeated Entry       entries     = 7  [(gogoproto.nullable) = false]; //*日志
+	optional uint64      commit      = 8  [(gogoproto.nullable) = false]; 
 	optional Snapshot    snapshot    = 9  [(gogoproto.nullable) = false];
 	optional bool        reject      = 10 [(gogoproto.nullable) = false];
 	optional uint64      rejectHint  = 11 [(gogoproto.nullable) = false];
