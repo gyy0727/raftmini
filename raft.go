@@ -996,7 +996,6 @@ func stepLeader(r *raft, m pb.Message) {
 		pr.RecentActive = true
 		//*这里调用resume是因为当前可能处于probe状态，而这个状态在两个heartbeat消息的间隔期只能收一条同步日志消息，因此在收到HB消息时就停止pause标记
 		pr.resume()
-
 		if pr.State == ProgressStateReplicate && pr.ins.full() {
 			pr.ins.freeFirstOne()
 		}
@@ -1097,7 +1096,7 @@ func stepCandidate(r *raft, m pb.Message) {
 		myVoteRespType = pb.MsgVoteResp
 	}
 
-	//*以下转换成follower状态时，为什么不判断消息的term是否至少大于当前节点的term？？？
+	//*NOTE 以下转换成follower状态时，为什么不判断消息的term是否至少大于当前节点的term？？？
 	switch m.Type {
 	//*探测状态
 	case pb.MsgProp:
@@ -1137,14 +1136,13 @@ func stepCandidate(r *raft, m pb.Message) {
 				r.bcastAppend()
 				//*广播添加日志的请求
 			}
-		case len(r.votes) - gr: //*如果是半数以上节点拒绝了投票
+		case len(r.votes) - gr: //*如果是半数以上节点拒绝了投票,(总人数-赞同的人数)
 			//*变成follower
 			r.becomeFollower(r.Term, None)
 		}
 	case pb.MsgTimeoutNow:
 		//*忽略不处理当前指令
 		r.logger.Infof("%x [term %d state %v] ignored MsgTimeoutNow from %x [term %d]", r.id, r.Term, r.state, m.From, m.Term)
-
 	}
 }
 
@@ -1158,7 +1156,7 @@ func stepFollower(r *raft, m pb.Message) {
 			r.logger.Infof("%x no leader at term %d; dropping proposal", r.id, r.Term)
 			return
 		}
-		//*向leader进行redirect
+		//*将客户端的提案转交给leader处理
 		m.To = r.lead
 		r.send(m)
 	case pb.MsgApp:
@@ -1184,6 +1182,7 @@ func stepFollower(r *raft, m pb.Message) {
 			r.logger.Infof("%x no leader at term %d; dropping leader transfer msg", r.id, r.Term)
 			return
 		}
+		//*转发给leader处理
 		m.To = r.lead
 		r.send(m)
 	case pb.MsgTimeoutNow:
@@ -1368,7 +1367,7 @@ func (r *raft) checkQuorumActive() bool {
 	var act int
 
 	for id := range r.prs {
-		if id == r.id { // self is always active
+		if id == r.id { 
 			act++
 			continue
 		}

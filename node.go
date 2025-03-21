@@ -18,8 +18,8 @@ const (
 )
 
 var (
-	emptyState = pb.HardState{}
-	ErrStopped = errors.New("raft: stopped")
+	emptyState = pb.HardState{}              //*空的硬状态
+	ErrStopped = errors.New("raft: stopped") //*停止节点
 )
 
 // **软状态是异变的，包括：当前集群leader、当前节点状态
@@ -39,23 +39,17 @@ func (a SoftState) equal(b *SoftState) bool {
 type Ready struct {
 	//*软状态是异变的，包括：当前集群leader、当前节点状态
 	*SoftState
-
 	//*硬状态需要被保存，包括：节点当前Term、Vote、Commit
 	//*如果当前这部分没有更新，则等于空状态
 	pb.HardState
-
 	//*保存ready状态的readindex数据信息
 	ReadStates []ReadState
-
 	//*需要在消息发送之前被写入到持久化存储中的entries数据数组
 	Entries []pb.Entry
-
 	//*需要写入到持久化存储中的快照数据
 	Snapshot pb.Snapshot
-
 	//*需要输入到状态机中的数据数组，这些数据之前已经被保存到持久化存储中了
 	CommittedEntries []pb.Entry
-
 	//*在entries被写入持久化存储中以后，需要发送出去的数据
 	Messages []pb.Message
 }
@@ -247,6 +241,8 @@ func (n *node) run(r *raft) {
 			//*advance channel不为空，说明还在等应用调用Advance接口通知已经处理完毕了本次的ready数据
 			readyc = nil
 		} else {
+			//*prevSoftSt: 上一次的软状态（Leader 和节点状态）
+			//*prevHardSt: 上一次的硬状态（Term、Vote、Commit）
 			rd = newReady(r, prevSoftSt, prevHardSt)
 			if rd.containsUpdates() {
 				readyc = n.readyc
