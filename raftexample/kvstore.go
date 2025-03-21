@@ -6,7 +6,7 @@ import (
 	"log"
 	"sync"
 
-	"github.com/coreos/etcd/snap"
+	"github.com/gyy0727/raftmini/pkg/snap"
 )
 
 

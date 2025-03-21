@@ -4,7 +4,7 @@ import (
 	"flag"
 	"strings"
 
-	"github.com/coreos/etcd/raft/raftpb"
+	"github.com/gyy0727/raftmini/raftpb"
 )
 
 func main() {
