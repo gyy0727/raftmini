@@ -170,14 +170,19 @@ type raft struct {
 	Vote uint64
 	//*读状态
 	readStates []ReadState
+
 	//*日志
 	raftLog *raftLog
+
 	//*最大飞行消息数
 	maxInflight int
+
 	//*最大消息大小
 	maxMsgSize uint64
+
 	//* 是一个映射，键是节点 ID，值是指向 Progress 结构体的指针，用于跟踪每个节点的进度。
 	prs map[uint64]*Progress
+
 	//*当前节点的状态
 	state StateType
 
@@ -311,11 +316,13 @@ func (r *raft) nodes() []uint64 {
 	return nodes
 }
 
-// *消息的发送
+// *消息的发送,其实就是将消息添加到r.msgs
 func (r *raft) send(m pb.Message) {
-	m.From = r.id
+	if m.From == None {
+		m.From = r.id
+	}
 	//* NOTE 理解发送的细节
-	if m.Type == pb.MsgVote || m.Type == pb.MsgPreVote {
+	if m.Type == pb.MsgVote || m.Type == pb.MsgVoteResp || m.Type == pb.MsgPreVote || m.Type == pb.MsgPreVoteResp {
 		if m.Term == 0 {
 			panic(fmt.Sprintf("term should be set when sending %s", m.Type))
 		}
@@ -383,7 +390,7 @@ func (r *raft) sendAppend(to uint64) {
 		m.Type = pb.MsgApp
 		m.Index = pr.Next - 1
 		m.LogTerm = term
-		m.Entries = ents
+		m.Entries = ents //*日志切片
 		//*append消息需要告知当前leader的commit索引
 		m.Commit = r.raftLog.committed
 		if n := len(m.Entries); n != 0 { //*如果发送过去的entries不为空
@@ -409,6 +416,7 @@ func (r *raft) sendAppend(to uint64) {
 // *发送心跳
 func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
 	//*比较leader节点已经提交的索引和follower节点已经提交的索引，取最小值
+	//*因为某些节点下,leader已经commit的日志,可能还没传输到follower
 	commit := min(r.prs[to].Match, r.raftLog.committed)
 	m := pb.Message{
 		To:      to,
@@ -431,6 +439,7 @@ func (r *raft) bcastAppend() {
 
 // *广播心跳
 func (r *raft) bcastHeartbeat() {
+	//*NOTE 注意这个上下文
 	lastCtx := r.readOnly.lastPendingRequestCtx()
 	if len(lastCtx) == 0 {
 		r.bcastHeartbeatWithCtx(nil)
@@ -457,7 +466,7 @@ func (r *raft) maybeCommit() bool {
 	for id := range r.prs {
 		mis = append(mis, r.prs[id].Match)
 	}
-	//*逆序排列
+	//*NOTE 逆序排列
 	sort.Sort(sort.Reverse(mis))
 	//*排列之后拿到中位数的Match，因为如果这个位置的Match对应的Term也等于当前的Term
 	//*说明有过半的节点至少comit了mci这个索引的数据，这样leader就可以以这个索引进行commit了
@@ -489,7 +498,6 @@ func (r *raft) reset(term uint64) {
 	r.heartbeatElapsed = 0
 	//*重置选举超时
 	r.resetRandomizedElectionTimeout()
-
 	r.abortLeaderTransfer()
 	r.votes = make(map[uint64]bool)
 	for id := range r.prs {
@@ -500,7 +508,6 @@ func (r *raft) reset(term uint64) {
 	}
 	r.pendingConf = false
 	r.readOnly = newReadOnly(r.readOnly.option)
-
 }
 
 // *批量append一堆entries
@@ -514,12 +521,13 @@ func (r *raft) appendEntry(es ...pb.Entry) {
 	r.raftLog.append(es...)
 	//*更新当前节点的进度
 	r.prs[r.id].maybeUpdate(r.raftLog.lastIndex())
-	//*将新的日志条目发送给其他节点
+	//*提交日志
 	r.maybeCommit()
 }
 
 // *follower以及candidate的tick(心跳)函数，在r.electionTimeout(选举超时)之后被调用
 func (r *raft) tickElection() {
+	//*是自上次选举超时以来的 tick
 	r.electionElapsed++
 	if r.promotable() && r.pastElectionTimeout() {
 		r.electionElapsed = 0
@@ -528,18 +536,21 @@ func (r *raft) tickElection() {
 }
 
 // *leader的tick(心跳)函数，在r.heartbeatTimeout(心跳超时)之后被调用
+// !TODO 可以重点理解
 func (r *raft) tickHeartbeat() {
-	// NOTE理解electionElapsed和heartbeatElapsed
+	//*NOTE 理解electionElapsed和heartbeatElapsed
 	r.heartbeatElapsed++
 	r.electionElapsed++
 
 	if r.electionElapsed >= r.electionTimeout {
 		r.electionElapsed = 0
 		if r.checkQuorum {
+			//*NOTE 如果开启了检查quorum，那么就进行检查
 			r.Step(pb.Message{From: r.id, Type: pb.MsgCheckQuorum})
 		}
 		if r.state == StateLeader && r.leadTransferee != None {
 			//*当前在迁移leader的流程，但是过了选举超时新的leader还没有产生，那么旧的leader重新成为leader
+			//*NOTE 这个逻辑是为了防止旧的leader在选举超时之后还没有产生新的leader，就会重新成为leader
 			r.abortLeaderTransfer()
 		}
 	}
@@ -604,6 +615,7 @@ func (r *raft) becomeLeader() {
 		panic("invalid transition [follower -> leader]")
 	}
 	r.step = stepLeader
+	//*NOTE 候选人状态执行+1,就算竞选失败也不会回退
 	r.reset(r.Term)
 	r.tick = r.tickHeartbeat
 	r.lead = r.id
@@ -625,12 +637,13 @@ func (r *raft) becomeLeader() {
 		r.pendingConf = true
 	}
 
-	//*为什么成为leader之后需要传入一个空数据？
+	//*NOTE 为什么成为leader之后需要传入一个空数据？隔离开
 	r.appendEntry(pb.Entry{Data: nil})
 	r.logger.Infof("%x became leader at term %d", r.id, r.Term)
 }
 
 // *发起选举
+// * NOTE 发起选举的逻辑
 func (r *raft) campaign(t CampaignType) {
 	//*任期号
 	var term uint64
@@ -706,7 +719,7 @@ func (r *raft) poll(id uint64, t pb.MessageType, v bool) (granted int) {
 	return granted
 }
 
-// *raft 状态机的核心函数，处理消息
+// *NOTE 选举的流程
 func (r *raft) Step(m pb.Message) error {
 	r.logger.Infof("from:%d, to:%d, type:%s, term:%d, state:%v", m.From, m.To, m.Type, r.Term, r.state)
 
@@ -725,23 +738,28 @@ func (r *raft) Step(m pb.Message) error {
 			inLease := r.checkQuorum && r.lead != None && r.electionElapsed < r.electionTimeout
 			if !force && inLease {
 				//*如果非强制，而且又在租约期以内，就不做任何处理
-				//*非强制又在租约期内可以忽略选举消息，见论文的4.2.3，这是为了阻止已经离开集群的节点再次发起投票请求
+				//*NOTE 非强制又在租约期内可以忽略选举消息，见论文的4.2.3，这是为了阻止已经离开集群的节点再次发起投票请求
 				//*已经离开集群的非法节点可能以为自己是集群的一部分发起选举
 				r.logger.Infof("%x [logterm: %d, index: %d, vote: %x] ignored %s from %x [logterm: %d, index: %d] at term %d: lease is not expired (remaining ticks: %d)",
 					r.id, r.raftLog.lastTerm(), r.raftLog.lastIndex(), r.Vote, m.Type, m.From, m.LogTerm, m.Index, r.Term, r.electionTimeout-r.electionElapsed)
 				return nil
 			}
-
 			//*否则将lead置为空
 			//*能走到这里证明现在是正常的选举流程,将lead置为空是表明当前节点不认可from节点的领导权
+			//*因为是正常的选举流程,所以得将领导者重置
 			lead = None
 		}
 		switch {
 		//*预投票
 		case m.Type == pb.MsgPreVote:
 			//*在应答一个prevote消息时不对任期term做修改
-		//*对自己发出的预投票的消息的响应且没有拒绝
+
 		case m.Type == pb.MsgPreVoteResp && !m.Reject:
+			//*NOTE
+			//*对自己发出的预投票的消息的响应且没有拒绝
+			//*为什么出现在 case m.Term > r.Term: 分支下？
+			//*当发起预投票的节点收到 pb.MsgPreVoteResp 消息时，如果消息的 Term 大于当前节点的 Term，说明其他节点的 Term 已经更新。
+			//*在这种情况下，当前节点需要更新自己的 Term，并根据消息的内容决定是否继续选举。
 
 		default:
 			r.logger.Infof("%x [term: %d] received a %s message with higher term from %x [term: %d]",
@@ -838,7 +856,9 @@ func stepLeader(r *raft, m pb.Message) {
 			r.becomeFollower(r.Term, None)
 		}
 		return
+
 	case pb.MsgProp:
+		//*客户端提交数据到raft,例如一个写请求
 		//*提交日志
 		if len(m.Entries) == 0 {
 			//*当前没有可以提交的日志
@@ -848,6 +868,7 @@ func stepLeader(r *raft, m pb.Message) {
 			//*不在集群中,不在集群那就不能做出干扰集群的行为
 			return
 		}
+		//*当前正在发生领导权转移
 		if r.leadTransferee != None {
 			r.logger.Infof("%x [term %d] transfer leadership to %x is in progress; dropping proposal", r.id, r.Term, r.leadTransferee)
 			return
@@ -910,7 +931,6 @@ func stepLeader(r *raft, m pb.Message) {
 
 	}
 
-	//*All other message types require a progress for m.From (pr).
 	//*检查消息发送者当前是否在集群中,避免受到其他废弃节点的干扰
 	pr, prOk := r.prs[m.From]
 	if !prOk {
@@ -976,7 +996,6 @@ func stepLeader(r *raft, m pb.Message) {
 		pr.RecentActive = true
 		//*这里调用resume是因为当前可能处于probe状态，而这个状态在两个heartbeat消息的间隔期只能收一条同步日志消息，因此在收到HB消息时就停止pause标记
 		pr.resume()
-
 		if pr.State == ProgressStateReplicate && pr.ins.full() {
 			pr.ins.freeFirstOne()
 		}
@@ -1077,7 +1096,7 @@ func stepCandidate(r *raft, m pb.Message) {
 		myVoteRespType = pb.MsgVoteResp
 	}
 
-	//*以下转换成follower状态时，为什么不判断消息的term是否至少大于当前节点的term？？？
+	//*NOTE 以下转换成follower状态时，为什么不判断消息的term是否至少大于当前节点的term？？？
 	switch m.Type {
 	//*探测状态
 	case pb.MsgProp:
@@ -1117,14 +1136,13 @@ func stepCandidate(r *raft, m pb.Message) {
 				r.bcastAppend()
 				//*广播添加日志的请求
 			}
-		case len(r.votes) - gr: //*如果是半数以上节点拒绝了投票
+		case len(r.votes) - gr: //*如果是半数以上节点拒绝了投票,(总人数-赞同的人数)
 			//*变成follower
 			r.becomeFollower(r.Term, None)
 		}
 	case pb.MsgTimeoutNow:
 		//*忽略不处理当前指令
 		r.logger.Infof("%x [term %d state %v] ignored MsgTimeoutNow from %x [term %d]", r.id, r.Term, r.state, m.From, m.Term)
-
 	}
 }
 
@@ -1138,7 +1156,7 @@ func stepFollower(r *raft, m pb.Message) {
 			r.logger.Infof("%x no leader at term %d; dropping proposal", r.id, r.Term)
 			return
 		}
-		//*向leader进行redirect
+		//*将客户端的提案转交给leader处理
 		m.To = r.lead
 		r.send(m)
 	case pb.MsgApp:
@@ -1164,6 +1182,7 @@ func stepFollower(r *raft, m pb.Message) {
 			r.logger.Infof("%x no leader at term %d; dropping leader transfer msg", r.id, r.Term)
 			return
 		}
+		//*转发给leader处理
 		m.To = r.lead
 		r.send(m)
 	case pb.MsgTimeoutNow:
@@ -1348,7 +1367,7 @@ func (r *raft) checkQuorumActive() bool {
 	var act int
 
 	for id := range r.prs {
-		if id == r.id { // self is always active
+		if id == r.id { 
 			act++
 			continue
 		}

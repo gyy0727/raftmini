@@ -60,7 +60,7 @@ func NewMemoryStorage() *MemoryStorage {
 	}
 }
 
-//*实现的storage接口
+//*用于返回当前storage中保存的硬状态，快照配置状态和错误信息
 func (ms *MemoryStorage) InitialState() (pb.HardState, pb.ConfState, error) {
 	return ms.hardState, ms.snapshot.Metadata.ConfState, nil
 }
@@ -73,11 +73,12 @@ func (ms *MemoryStorage) SetHardState(st pb.HardState) error {
 	return nil
 }
 
-
+//*//*返回已经序列化的数据中的最后一条日志的索引(未被压缩成快照的)
 func (ms *MemoryStorage)lastIndex()uint64{
 	return ms.ents[0].Index+uint64(len(ms.ents))-1
 }
 
+//*返回已经序列化的数据中的最后一条日志的索引(未被压缩成快照的)
 func (ms* MemoryStorage)LastIndex()(uint64,error){
 	ms.Lock()
 	defer ms.Unlock()
@@ -85,7 +86,7 @@ func (ms* MemoryStorage)LastIndex()(uint64,error){
 }
 
 
-
+//*返回索引处于lo,hi之间不超过maxSize的entries数组
 func (ms *MemoryStorage) Entries(lo, hi, maxSize uint64) ([]pb.Entry, error) {
 	ms.Lock()
 	defer ms.Unlock()
@@ -124,25 +125,26 @@ func (ms *MemoryStorage) Term(i uint64) (uint64, error) {
 
 
 
-
+//*返回第一条日志的索引
 func (ms *MemoryStorage) FirstIndex() (uint64, error) {
 	ms.Lock()
 	defer ms.Unlock()
 	return ms.firstIndex(), nil
 }
 
+//*NOTE 加一是因为ents的第一条数据是占位符
 func (ms *MemoryStorage) firstIndex() uint64 {
 	return ms.ents[0].Index + 1
 }
 
-//*Snapshot implements the Storage interface.
+//*返回已经序列化的快照信息
 func (ms *MemoryStorage) Snapshot() (pb.Snapshot, error) {
 	ms.Lock()
 	defer ms.Unlock()
 	return ms.snapshot, nil
 }
 
-//*使用快照数据进行数据还原
+//*应用一个新的快照 到 MemoryStorage 中，并更新日志条目以反映快照的状态
 func (ms *MemoryStorage) ApplySnapshot(snap pb.Snapshot) error {
 	ms.Lock()
 	defer ms.Unlock()
@@ -154,7 +156,7 @@ func (ms *MemoryStorage) ApplySnapshot(snap pb.Snapshot) error {
 	}
 
 	ms.snapshot = snap
-	//*这里也插入了一条空数据
+	//*NOTE: 将日志条目 ents 重置为一个新的切片，并插入了一个占位符（dummy entry）
 	ms.ents = []pb.Entry{{Term: snap.Metadata.Term, Index: snap.Metadata.Index}}
 	return nil
 }
@@ -205,7 +207,7 @@ func (ms *MemoryStorage) Compact(compactIndex uint64) error {
 	//*这里也是先写一个空数据
 	ents[0].Index = ms.ents[i].Index
 	ents[0].Term = ms.ents[i].Term
-	//*然后再append进来
+	//*然后再append compactindex后面进来
 	ents = append(ents, ms.ents[i+1:]...)
 	ms.ents = ents
 	return nil
@@ -226,13 +228,11 @@ func (ms *MemoryStorage) Append(entries []pb.Entry) error {
 	//*得到传入的最后一条数据的索引
 	last := entries[0].Index + uint64(len(entries)) - 1
 
-	//*shortcut if there is no new entry.
 	//*检查合法性
 	if last < first {
 		return nil
 	}
 
-	//*truncate compacted entries
 	//*如果当前已经包含传入数据中的一部分，那么已经有的那部分数据可以不用重复添加进来
 	if first > entries[0].Index {
 		entries = entries[first-entries[0].Index:]

@@ -28,6 +28,7 @@ type readIndexStatus struct {
 
 //*readOnly用于管理全局的readIndx数据
 type readOnly struct {
+	//*是否开启线性一致读
 	option           ReadOnlyOption
 	//* 使用entry的数据为key，保存当前pending的readIndex状态
 	pendingReadIndex map[string]*readIndexStatus

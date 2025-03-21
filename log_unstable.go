@@ -12,15 +12,10 @@ import pb "github.com/gyy0727/raftmini/raftpb"
 // *entry数组则是用于逐条数据进行接收时使用
 // *其中offset与entry数组配合着使用，可能会出现小于持久化最大索引偏移量的数据，所以需要做截断处理
 type unstable struct {
-
-	//*保存还没有持久化的快照数据
-	snapshot *pb.Snapshot
-
-	//*还未持久化的数据
-	entries []pb.Entry
-	//*offset用于保存entries数组中的数据的起始index
-	offset uint64
-	logger Logger
+	snapshot *pb.Snapshot //*保存还没有持久化的快照数据
+	entries  []pb.Entry   //*还未持久化的数据
+	offset   uint64       //*offset用于保存entries数组中的数据的起始index
+	logger   Logger
 }
 
 // *只有在快照存在的情况下，返回快照中的meta数据
@@ -34,8 +29,7 @@ func (u *unstable) maybeFirstIndex() (uint64, bool) {
 	return 0, false
 }
 
-// *maybeLastIndex returns the last index if it has at least one
-// *unstable entry or snapshot.
+
 // *如果entries存在，返回最后一个entry的索引
 // *否则如果快照存在，返回快照的meta数据中的索引
 // *以上都不成立，则返回false
@@ -78,8 +72,7 @@ func (u *unstable) maybeTerm(i uint64) (uint64, bool) {
 	return u.entries[i-u.offset].Term, true
 }
 
-
-//*传入索引i和term，表示目前这块数据已经持久化了
+// *传入索引i和term，表示目前这块数据已经持久化了
 func (u *unstable) stableTo(i, t uint64) {
 	gt, ok := u.maybeTerm(i)
 	if !ok {
@@ -95,7 +88,7 @@ func (u *unstable) stableTo(i, t uint64) {
 	}
 }
 
-//*传入索引，对快照进行操作
+// *传入索引，表示快照已经被持久化
 func (u *unstable) stableSnapTo(i uint64) {
 	if u.snapshot != nil && u.snapshot.Metadata.Index == i {
 		//*如果索引刚好是快照的索引，说明快照的数据已经保存，所以当前快照可以置空了
@@ -103,8 +96,7 @@ func (u *unstable) stableSnapTo(i uint64) {
 	}
 }
 
-
-//*传入快照，从快照数据中恢复
+// *传入快照，从快照数据中恢复
 func (u *unstable) restore(s pb.Snapshot) {
 	//*偏移量从快照索引之后开始，entries置空
 	u.offset = s.Metadata.Index + 1
@@ -114,16 +106,14 @@ func (u *unstable) restore(s pb.Snapshot) {
 	u.snapshot = &s
 }
 
-
-
-//*返回索引范围在[lo-u.offset : hi-u.offset]之间的数据
+// *返回索引范围在[lo-u.offset : hi-u.offset]之间的数据
 func (u *unstable) slice(lo uint64, hi uint64) []pb.Entry {
 	u.mustCheckOutOfBounds(lo, hi)
 	return u.entries[lo-u.offset : hi-u.offset]
 }
 
-//*u.offset <= lo <= hi <= u.offset+len(u.offset)
-//*检查传入的索引范围是否合法，不合法直接panic
+// *u.offset <= lo <= hi <= u.offset+len(u.offset)
+// *检查传入的索引范围是否合法，不合法直接panic
 func (u *unstable) mustCheckOutOfBounds(lo, hi uint64) {
 	if lo > hi {
 		u.logger.Panicf("invalid unstable.slice %d > %d", lo, hi)
@@ -134,8 +124,8 @@ func (u *unstable) mustCheckOutOfBounds(lo, hi uint64) {
 	}
 }
 
-//*传入entries，可能会导致原先数据的截断或者添加操作
-//*这就是最开始注释中说明的offset可能比持久化索引小的情况，需要做截断
+// *传入entries，可能会导致原先数据的截断或者添加操作
+// *这就是最开始注释中说明的offset可能比持久化索引小的情况，需要做截断
 func (u *unstable) truncateAndAppend(ents []pb.Entry) {
 	//*先拿到这些数据的第一个索引
 	after := ents[0].Index
