@@ -169,14 +169,12 @@ func (rc *raftNode) loadSnapshot() *raftpb.Snapshot {
 }
 
 // *返回对应目录下的wal实例
-func (rc *raftNode) openWAL(snapshot *raftpb.Snapshot) *wal.WAL {
-	//*判断目录是否存在
+func (rc *raftNode) openWAL() *wal.WAL {
 	if !wal.Exist(rc.waldir) {
-		//*不存在就创建目录
 		if err := os.Mkdir(rc.waldir, 0750); err != nil {
 			log.Fatalf("raftexample: cannot create dir for wal (%v)", err)
 		}
-		//*根据wal目录创建wal结构体
+
 		w, err := wal.Create(rc.waldir, nil)
 		if err != nil {
 			log.Fatalf("raftexample: create wal error (%v)", err)
@@ -184,45 +182,31 @@ func (rc *raftNode) openWAL(snapshot *raftpb.Snapshot) *wal.WAL {
 		w.Close()
 	}
 
-	walsnap := walpb.Snapshot{}
-	if snapshot != nil {
-		walsnap.Index, walsnap.Term = snapshot.Metadata.Index, snapshot.Metadata.Term
-	}
-	log.Printf("loading WAL at term %d and index %d", walsnap.Term, walsnap.Index)
-	w, err := wal.Open(rc.waldir, walsnap)
+	w, err := wal.Open(rc.waldir, walpb.Snapshot{})
 	if err != nil {
 		log.Fatalf("raftexample: error loading wal (%v)", err)
 	}
-	//*返回wal实例
+
 	return w
 }
 
+
 // *Raft节点在启动或恢复时用于重放预写日志（WAL）以重建状态的关键步骤
 func (rc *raftNode) replayWAL() *wal.WAL {
-	log.Printf("replaying WAL of member %d", rc.id)
-	//*先获得快照
-	snapshot := rc.loadSnapshot()
-	if snapshot == nil {
-		return nil
-	}
-	//*打开WAL并读取数据
-	w := rc.openWAL(snapshot)
+	w := rc.openWAL()
 	_, st, ents, err := w.ReadAll()
 	if err != nil {
 		log.Fatalf("raftexample: failed to read WAL (%v)", err)
 	}
-	//*创建新的内存存储（MemoryStorage），替换旧存储，确保从干净状态开始
-	rc.raftStorage = raft.NewMemoryStorage()
-	if snapshot != nil {
-		rc.raftStorage.ApplySnapshot(*snapshot)
-	}
-	rc.raftStorage.SetHardState(st)
+	// append to storage so raft starts at the right place in log
 	rc.raftStorage.Append(ents)
+	// send nil once lastIndex is published so client knows commit channel is current
 	if len(ents) > 0 {
 		rc.lastIndex = ents[len(ents)-1].Index
 	} else {
 		rc.commitC <- nil
 	}
+	rc.raftStorage.SetHardState(st)
 	return w
 }
 
