@@ -109,11 +109,22 @@ func (s *Snapshotter) Load() (*raftpb.Snapshot, error) {
 
 func loadSnap(dir, name string) (*raftpb.Snapshot, error) {
 	fpath := path.Join(dir, name)
+
+	// 检查文件是否存在
+	if _, err := os.Stat(fpath); os.IsNotExist(err) {
+		// 如果文件不存在，返回空的 Snapshot 结构体
+		return &raftpb.Snapshot{}, nil
+	}
+
+	// 文件存在，尝试读取
 	snap, err := Read(fpath)
 	if err != nil {
+		// 如果读取失败，重命名损坏的文件
 		renameBroken(fpath)
+		return nil, err
 	}
-	return snap, err
+
+	return snap, nil
 }
 
 // *用于从文件中读取并解析 Raft 快照

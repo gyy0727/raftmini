@@ -403,7 +403,6 @@ func (n *node) step(ctx context.Context, m pb.Message) error {
 	if m.Type == pb.MsgProp {
 		ch = n.propc
 	}
-
 	select {
 	case ch <- m:
 		return nil

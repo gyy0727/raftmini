@@ -4,15 +4,13 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strconv"
 	"time"
 
 	"net/http"
 	"net/url"
 
-	"github.com/coreos/etcd/pkg/types"
-	rafthttp "github.com/gyy0727/raftmini/pkg/http"
 	raft "github.com/gyy0727/raftmini"
+	rafthttp "github.com/gyy0727/raftmini/pkg/http"
 	"github.com/gyy0727/raftmini/pkg/snap"
 	"github.com/gyy0727/raftmini/pkg/stats"
 	"github.com/gyy0727/raftmini/raftpb"
@@ -59,23 +57,23 @@ func newRaftNode(id int, peers []string, join bool, getSnapshot func() ([]byte, 
 	errorC := make(chan error)
 
 	rc := &raftNode{
-		proposeC:    proposeC,
-		confChangeC: confChangeC,
-		commitC:     commitC,
-		errorC:      errorC,
-		id:          id,
-		peers:       peers,
-		join:        join,
-		waldir:      fmt.Sprintf("raftexample-%d", id),
-		snapdir:     fmt.Sprintf("raftexample-%d-snap", id),
-		getSnapshot: getSnapshot,
-		snapCount:   defaultSnapCount,
-		stopc:       make(chan struct{}),
-		httpstopc:   make(chan struct{}),
-		httpdonec:   make(chan struct{}),
-
+		proposeC:         proposeC,
+		confChangeC:      confChangeC,
+		commitC:          commitC,
+		errorC:           errorC,
+		id:               id,
+		peers:            peers,
+		join:             join,
+		waldir:           fmt.Sprintf("raftexample-%d", id),
+		snapdir:          fmt.Sprintf("raftexample-%d-snap", id),
+		getSnapshot:      getSnapshot,
+		snapCount:        defaultSnapCount,
+		stopc:            make(chan struct{}),
+		httpstopc:        make(chan struct{}),
+		httpdonec:        make(chan struct{}),
 		snapshotterReady: make(chan *snap.Snapshotter, 1),
 	}
+	rc.snapshotter = snap.New(rc.snapdir)
 	go rc.startRaft()
 	return commitC, errorC, rc.snapshotterReady
 }
@@ -204,6 +202,9 @@ func (rc *raftNode) replayWAL() *wal.WAL {
 	log.Printf("replaying WAL of member %d", rc.id)
 	//*先获得快照
 	snapshot := rc.loadSnapshot()
+	if snapshot == nil {
+		return nil
+	}
 	//*打开WAL并读取数据
 	w := rc.openWAL(snapshot)
 	_, st, ents, err := w.ReadAll()
@@ -244,6 +245,7 @@ func (rc *raftNode) startRaft() {
 	rc.wal = rc.replayWAL()
 
 	rpeers := make([]raft.Peer, len(rc.peers))
+	
 	for i := range rpeers {
 		rpeers[i] = raft.Peer{ID: uint64(i + 1)}
 	}
@@ -270,10 +272,10 @@ func (rc *raftNode) startRaft() {
 	ss.Initialize()
 
 	rc.transport = &rafthttp.Transport{
-		ID:          rc.id,
-		ClusterID:   0x1000,
-		Raft:        rc,
-		ErrorC:      make(chan error),
+		ID:        rc.id,
+		ClusterID: 0x1000,
+		Raft:      rc,
+		ErrorC:    make(chan error),
 	}
 
 	rc.transport.Start()
