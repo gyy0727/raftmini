@@ -21,7 +21,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/coreos/etcd/raft/raftpb"
+	"github.com/gyy0727/raftmini/raftpb"
 )
 
 // Handler for a http based key-value store backed by raft

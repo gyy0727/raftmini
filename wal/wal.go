@@ -62,6 +62,7 @@ type WAL struct {
 	fp        *filePipeline    //*文件管道，用于管理 WAL 文件的分配和预分配
 }
 
+//*创建一个新的 WAL（Write-Ahead Log）文件
 func Create(dirpath string, metadata []byte) (*WAL, error) {
 	if Exist(dirpath) {
 		return nil, os.ErrExist
@@ -130,7 +131,7 @@ func Create(dirpath string, metadata []byte) (*WAL, error) {
 	return w, nil
 }
 
-// *用于打开一个已经存在的 WAL（Write-Ahead Log）并准备读取其中的记录
+// *用于打开一个已经存在的 WAL（Write-Ahead Log）
 func Open(dirpath string, snap walpb.Snapshot) (*WAL, error) {
 	w, err := openAtIndex(dirpath, snap, true)
 	if err != nil {

@@ -226,6 +226,7 @@ type raft struct {
 
 // *创建一个新的raft节点
 func newRaft(c *Config) *raft {
+	fmt.Println("newRaft")
 	//*检查传入的配置是否合法
 	if err := c.validate(); err != nil {
 		panic(err.Error())
@@ -263,8 +264,10 @@ func newRaft(c *Config) *raft {
 	}
 
 	for _, p := range peers {
+
 		r.prs[p] = &Progress{Next: 1, ins: newInflights(r.maxInflight)}
 	}
+	// r.prs[r.id] =&Progress{Next: 1, ins: newInflights(r.maxInflight)}
 
 	//*如果不是第一次启动而是从之前的数据进行恢复
 	if !isHardStateEqual(hs, emptyState) {
@@ -527,8 +530,13 @@ func (r *raft) appendEntry(es ...pb.Entry) {
 
 // *follower以及candidate的tick(心跳)函数，在r.electionTimeout(选举超时)之后被调用
 func (r *raft) tickElection() {
+	fmt.Println("tickElection")
 	//*是自上次选举超时以来的 tick
 	r.electionElapsed++
+	fmt.Println("electionElapsed---------", r.electionElapsed,"++++++++" ,r.randomizedElectionTimeout)
+	if r.promotable(){
+		fmt.Println("promotable,可以被提升为leader节点")
+	}
 	if r.promotable() && r.pastElectionTimeout() {
 		r.electionElapsed = 0
 		r.Step(pb.Message{From: r.id, Type: pb.MsgHup})
@@ -538,6 +546,8 @@ func (r *raft) tickElection() {
 // *leader的tick(心跳)函数，在r.heartbeatTimeout(心跳超时)之后被调用
 // !TODO 可以重点理解
 func (r *raft) tickHeartbeat() {
+	fmt.Println("leader -- tickHeartbeat")
+
 	//*NOTE 理解electionElapsed和heartbeatElapsed
 	r.heartbeatElapsed++
 	r.electionElapsed++
@@ -571,6 +581,7 @@ func (r *raft) tickHeartbeat() {
 
 // *将节点转换成follower状态
 func (r *raft) becomeFollower(term uint64, lead uint64) {
+	fmt.Println("becomeFollower")
 	r.step = stepFollower
 	r.reset(term)
 	r.tick = r.tickElection
@@ -581,6 +592,7 @@ func (r *raft) becomeFollower(term uint64, lead uint64) {
 
 // *将节点转换成候选人状态
 func (r *raft) becomeCandidate() {
+	fmt.Println("becomeCandidate__________________________+++++++++++=")
 	//*NOTE leader应该转换成follower再转换成candidate,这才是raft的正常逻辑
 	if r.state == StateLeader {
 		panic("invalid transition [leader -> pre-candidate]")
@@ -610,6 +622,7 @@ func (r *raft) becomePreCandidate() {
 
 // *转换节点状态为 leader
 func (r *raft) becomeLeader() {
+	fmt.Println("becomeleader__________________________+++++++++++=**************8")
 	//*NOTE 应该由candidate转换成leader的逻辑
 	if r.state == StateFollower {
 		panic("invalid transition [follower -> leader]")
@@ -1148,6 +1161,7 @@ func stepCandidate(r *raft, m pb.Message) {
 
 // *处理follower状态机
 func stepFollower(r *raft, m pb.Message) {
+	fmt.Printf("stepFollower\n")
 	switch m.Type {
 	case pb.MsgProp:
 		//*本节点提交的值,探测leader
@@ -1354,6 +1368,7 @@ func (r *raft) loadState(state pb.HardState) {
 //*判断选举计时器是否超时
 
 func (r *raft) pastElectionTimeout() bool {
+	// fmt.Println("r.raftLog.electionTimeout is ", r.randomizedElectionTimeout)
 	return r.electionElapsed >= r.randomizedElectionTimeout
 }
 
@@ -1367,7 +1382,7 @@ func (r *raft) checkQuorumActive() bool {
 	var act int
 
 	for id := range r.prs {
-		if id == r.id { 
+		if id == r.id {
 			act++
 			continue
 		}

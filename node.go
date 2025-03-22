@@ -2,6 +2,7 @@ package raftmini
 
 import (
 	"errors"
+	"fmt"
 
 	pb "github.com/gyy0727/raftmini/raftpb"
 	"golang.org/x/net/context"
@@ -237,10 +238,13 @@ func (n *node) run(r *raft) {
 	prevHardSt := emptyState
 
 	for {
+
 		if advancec != nil {
+			// fmt.Println("advancec!= nil")
 			//*表示上一次发送的数据已经被处理完了
 			readyc = nil
 		} else {
+			// fmt.Println("advancec== nil")
 			//*prevSoftSt: 上一次的软状态（Leader 和节点状态）
 			//*prevHardSt: 上一次的硬状态（Term、Vote、Commit）
 			rd = newReady(r, prevSoftSt, prevHardSt)
@@ -275,16 +279,19 @@ func (n *node) run(r *raft) {
 		select {
 		//TODO 建议可能需要缓冲配置提议（参考 Raft 论文），暗示当前实现有改进空间。
 		case m := <-propc:
+			fmt.Println("raft.node: got proposal")
 			//*处理本地应用提交的日志条目
 			m.From = r.id
 			r.Step(m)
 		case m := <-n.recvc:
+			fmt.Println("raft.node: got message")
 			//*其他节点发过来的消息
 			if _, ok := r.prs[m.From]; ok || !IsResponseMsg(m.Type) {
 				//*需要确保节点在集群中或者不是应答类消息的情况下才进行处理
 				r.Step(m)
 			}
 		case cc := <-n.confc:
+			fmt.Println("raft.node: got configuration change")
 			//*配置变更的消息
 			if cc.NodeID == None {
 				//*NodeId为空的情况，只需要直接返回当前的nodes就好
@@ -314,8 +321,11 @@ func (n *node) run(r *raft) {
 			case <-n.done:
 			}
 		case <-n.tickc:
+			// fmt.Println("raft.node: got tick")
+			//*心跳
 			r.tick()
 		case readyc <- rd:
+
 			//*通过channel写入ready数据
 			//*以下先把ready的值保存下来，等待下一次循环使用，或者当advance调用完毕之后用于修改raftLog的
 			if rd.SoftState != nil {

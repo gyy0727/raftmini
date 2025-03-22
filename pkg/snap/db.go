@@ -45,7 +45,7 @@ func (s *Snapshotter) SaveDBFrom(r io.Reader, id uint64) (int64, error) {
 	return n, nil
 }
 
-//*查找数据库快照文件的路径并返回文件句柄 
+//*查找数据库快照文件的路径并返回文件路径
 func (s *Snapshotter) DBFilePath(id uint64) (string, error) {
 	fns, err := fileutil.ReadDir(s.dir)
 	if err != nil {
