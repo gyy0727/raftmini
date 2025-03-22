@@ -19,9 +19,8 @@ enum EntryType {
 //*标识一个单独的日志项
 message Entry {
 	//*任期
-	optional uint64     Term  = 2 [(gogoproto.nullable) = false]; // must be 64-bit aligned for atomic operations
-	//*日志项对应的索引
-	optional uint64     Index = 3 [(gogoproto.nullable) = false]; // must be 64-bit aligned for atomic operations
+	optional uint64     Term  = 2 [(gogoproto.nullable) = false]; 
+	optional uint64     Index = 3 [(gogoproto.nullable) = false]; 
 	//*日志的类型:配置变更和日志追加
 	optional EntryType  Type  = 1 [(gogoproto.nullable) = false];
 	//*数据

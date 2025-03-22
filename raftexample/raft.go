@@ -11,7 +11,7 @@ import (
 	"net/url"
 
 	"github.com/coreos/etcd/pkg/types"
-	"github.com/coreos/etcd/rafthttp"
+	rafthttp "github.com/gyy0727/raftmini/pkg/http"
 	raft "github.com/gyy0727/raftmini"
 	"github.com/gyy0727/raftmini/pkg/snap"
 	"github.com/gyy0727/raftmini/pkg/stats"
@@ -138,14 +138,14 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 			switch cc.Type {
 			case raftpb.ConfChangeAddNode:
 				if len(cc.Context) > 0 {
-					rc.transport.AddPeer(types.ID(cc.NodeID), []string{string(cc.Context)})
+					rc.transport.AddPeer(cc.NodeID, []string{string(cc.Context)})
 				}
 			case raftpb.ConfChangeRemoveNode:
 				if cc.NodeID == uint64(rc.id) {
 					log.Println("I've been removed from the cluster! Shutting down.")
 					return false
 				}
-				rc.transport.RemovePeer(types.ID(cc.NodeID))
+				rc.transport.RemovePeer(cc.NodeID)
 			}
 		}
 		rc.appliedIndex = ents[i].Index
@@ -270,18 +270,16 @@ func (rc *raftNode) startRaft() {
 	ss.Initialize()
 
 	rc.transport = &rafthttp.Transport{
-		ID:          types.ID(rc.id),
+		ID:          rc.id,
 		ClusterID:   0x1000,
 		Raft:        rc,
-		ServerStats: ss,
-		LeaderStats: stats.NewLeaderStats(strconv.Itoa(rc.id)),
 		ErrorC:      make(chan error),
 	}
 
 	rc.transport.Start()
 	for i := range rc.peers {
 		if i+1 != rc.id {
-			rc.transport.AddPeer(types.ID(i+1), []string{rc.peers[i]})
+			rc.transport.AddPeer(uint64(i+1), []string{rc.peers[i]})
 		}
 	}
 

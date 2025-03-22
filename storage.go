@@ -137,7 +137,7 @@ func (ms *MemoryStorage) firstIndex() uint64 {
 	return ms.ents[0].Index + 1
 }
 
-//*返回已经序列化的快照信息
+//*返回已经持久化的快照信息
 func (ms *MemoryStorage) Snapshot() (pb.Snapshot, error) {
 	ms.Lock()
 	defer ms.Unlock()
@@ -151,7 +151,7 @@ func (ms *MemoryStorage) ApplySnapshot(snap pb.Snapshot) error {
 	msIndex := ms.snapshot.Metadata.Index
 	snapIndex := snap.Metadata.Index
 	if msIndex >= snapIndex {
-		//*索引过期
+		//*快照过期
 		return ErrSnapOutOfDate
 	}
 

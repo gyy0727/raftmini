@@ -238,12 +238,13 @@ func (n *node) run(r *raft) {
 
 	for {
 		if advancec != nil {
-			//*advance channel不为空，说明还在等应用调用Advance接口通知已经处理完毕了本次的ready数据
+			//*表示上一次发送的数据已经被处理完了
 			readyc = nil
 		} else {
 			//*prevSoftSt: 上一次的软状态（Leader 和节点状态）
 			//*prevHardSt: 上一次的硬状态（Term、Vote、Commit）
 			rd = newReady(r, prevSoftSt, prevHardSt)
+			//*检查对比上一次,数据是否发生了更新
 			if rd.containsUpdates() {
 				readyc = n.readyc
 			} else {
