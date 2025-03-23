@@ -1,9 +1,11 @@
 package pbutil
 
-import "github.com/coreos/pkg/capnslog"
+import (
+	"go.uber.org/zap"
+)
 
 var (
-	plog = capnslog.NewPackageLogger("github.com/coreos/etcd/pkg", "flags")
+	logger, _ = zap.NewDevelopment()
 )
 
 // *定义接口：可序列化对象接口（类似protobuf的Marshal接口）
@@ -20,7 +22,7 @@ type Unmarshaler interface {
 func MustMarshal(m Marshaler) []byte {
 	d, err := m.Marshal()
 	if err != nil {
-		plog.Panicf("marshal should never fail (%v)", err)
+		logger.Panic("marshal should never fail (%v)", zap.Error(err))
 	}
 	return d
 }
@@ -28,7 +30,7 @@ func MustMarshal(m Marshaler) []byte {
 // *强制反序列化函数：失败时触发panic
 func MustUnmarshal(um Unmarshaler, data []byte) {
 	if err := um.Unmarshal(data); err != nil {
-		plog.Panicf("unmarshal should never fail (%v)", err)
+		logger.Panic("unmarshal should never fail (%v)", zap.Error(err))
 	}
 }
 
@@ -48,5 +50,5 @@ func GetBool(v *bool) (vv bool, set bool) {
 	return *v, true
 }
 
-// *创建布尔指针的便捷函数
+// *创建返回一个布尔指针
 func Boolp(b bool) *bool { return &b }

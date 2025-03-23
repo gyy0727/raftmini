@@ -8,10 +8,10 @@ import (
 )
 
 var (
-	default_cluster = "http://127.0.0.1:12379"
-	default_id      = 1
+	default_cluster = "http://127.0.0.1:12379,http://127.0.0.1:22379,http://127.0.0.1:32379,http://127.0.0.1:42379"
+	default_id      = 4
 	default_join    = false
-	default_port    = 12380
+	default_port    = 42380
 )
 
 func main() {

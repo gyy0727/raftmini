@@ -164,10 +164,13 @@ func (c *Config) validate() error {
 type raft struct {
 	//*节点的标识
 	id uint64
+
 	//*当前任期
 	Term uint64
+
 	//*当前任期投票的节点
 	Vote uint64
+
 	//*读状态
 	readStates []ReadState
 
@@ -262,12 +265,10 @@ func newRaft(c *Config) *raft {
 		preVote:          c.PreVote,
 		readOnly:         newReadOnly(c.ReadOnlyOption), //*实现线性一致读的接口
 	}
-
+	//*为每个远程节点添加进度
 	for _, p := range peers {
-
 		r.prs[p] = &Progress{Next: 1, ins: newInflights(r.maxInflight)}
 	}
-	// r.prs[r.id] =&Progress{Next: 1, ins: newInflights(r.maxInflight)}
 
 	//*如果不是第一次启动而是从之前的数据进行恢复
 	if !isHardStateEqual(hs, emptyState) {
@@ -325,9 +326,9 @@ func (r *raft) send(m pb.Message) {
 		m.From = r.id
 	}
 	//* NOTE 理解发送的细节
-	if m.Type == pb.MsgVote || m.Type == pb.MsgVoteResp || m.Type == pb.MsgPreVote || m.Type == pb.MsgPreVoteResp {
+	if m.Type == pb.MsgVote|| m.Type == pb.MsgPreVote  {
 		if m.Term == 0 {
-			panic(fmt.Sprintf("term should be set when sending %s", m.Type))
+			panic(fmt.Sprintf("term should be set when sending %s", m.Type,"now term if %d",m.Term))
 		}
 	} else {
 		if m.Term != 0 {
@@ -530,12 +531,13 @@ func (r *raft) appendEntry(es ...pb.Entry) {
 
 // *follower以及candidate的tick(心跳)函数，在r.electionTimeout(选举超时)之后被调用
 func (r *raft) tickElection() {
-	fmt.Println("tickElection")
+	// fmt.Println("tickElection")
 	//*是自上次选举超时以来的 tick
 	r.electionElapsed++
-	fmt.Println("electionElapsed---------", r.electionElapsed,"++++++++" ,r.randomizedElectionTimeout)
+	
+	r.logger.Debug("electionElapsed", r.electionElapsed)
 	if r.promotable(){
-		fmt.Println("promotable,可以被提升为leader节点")
+		// fmt.Println("promotable,可以被提升为leader节点")
 	}
 	if r.promotable() && r.pastElectionTimeout() {
 		r.electionElapsed = 0
@@ -546,7 +548,7 @@ func (r *raft) tickElection() {
 // *leader的tick(心跳)函数，在r.heartbeatTimeout(心跳超时)之后被调用
 // !TODO 可以重点理解
 func (r *raft) tickHeartbeat() {
-	fmt.Println("leader -- tickHeartbeat")
+	// fmt.Println("leader -- tickHeartbeat")
 
 	//*NOTE 理解electionElapsed和heartbeatElapsed
 	r.heartbeatElapsed++
@@ -734,6 +736,7 @@ func (r *raft) poll(id uint64, t pb.MessageType, v bool) (granted int) {
 
 // *NOTE 选举的流程
 func (r *raft) Step(m pb.Message) error {
+
 	r.logger.Infof("from:%d, to:%d, type:%s, term:%d, state:%v", m.From, m.To, m.Type, r.Term, r.state)
 
 	switch {

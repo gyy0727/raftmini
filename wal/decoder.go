@@ -23,6 +23,7 @@ type decoder struct {
 	crc          hash.Hash32     //* CRC32校验器
 }
 
+//*传入一个io.Reader列表，返回一个decoder对象,并把io.Reader列表的内容包装成bufio.reader
 func newDecoder(r ...io.Reader) *decoder {
 	readers := make([]*bufio.Reader, len(r))
 	for i := range r {
@@ -35,6 +36,7 @@ func newDecoder(r ...io.Reader) *decoder {
 	}
 }
 
+//*解码record记录
 func (d *decoder) decode(rec *walpb.Record) error {
 	rec.Reset() //*避免里面有旧数据
 	d.mu.Lock()
@@ -146,34 +148,34 @@ func (d *decoder) isTornEntry(data []byte) bool {
 	return false
 }
 
-//*根据传入的crc更新本地 
+// *根据传入的crc更新本地
 func (d *decoder) updateCRC(prevCrc uint32) {
 	d.crc = crc.New(prevCrc, crcTable)
-} 
+}
 
-//*返回当前校验码
+// *返回当前校验码
 func (d *decoder) lastCRC() uint32 {
 	return d.crc.Sum32()
 }
 
-//*返回解码器记录的最后一个有效偏移量
+// *返回解码器记录的最后一个有效偏移量
 func (d *decoder) lastOffset() int64 { return d.lastValidOff }
 
-//*将字节切片反序列化为 Raft 日志条目
+// *将字节切片反序列化为 Raft 日志条目
 func mustUnmarshalEntry(d []byte) raftpb.Entry {
 	var e raftpb.Entry
 	pbutil.MustUnmarshal(&e, d)
 	return e
 }
 
-//*将字节切片反序列化为 Raft 硬状态
+// *将字节切片反序列化为 Raft 硬状态
 func mustUnmarshalState(d []byte) raftpb.HardState {
 	var s raftpb.HardState
 	pbutil.MustUnmarshal(&s, d)
 	return s
 }
 
-//*从输入流中读取一个 64 位整数
+// *从输入流中读取一个 64 位整数
 func readInt64(r io.Reader) (int64, error) {
 	var n int64
 	err := binary.Read(r, binary.LittleEndian, &n)

@@ -14,6 +14,7 @@ var peers Peers
 
 //*AddPeer 方法将给定的 URL 字符串解析为 url.URL 并添加到 Peers 结构体的映射表中
 func (t *Transport) AddPeer(id uint64, us []string) error {
+	fmt.Println("addpeer ------------ ",id,"++++++",us)
 	if peers.Urls == nil {
 		peers.Urls = make(map[uint64]url.URL)
 	}

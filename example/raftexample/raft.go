@@ -49,7 +49,7 @@ func newRaftNode(id int, peers []string, join bool, proposeC <-chan string,
 	//遍历peers
 	for i := range peers {
 		fmt.Println(peers[i])
-		time.Sleep(1*time.Second)
+		time.Sleep(1 * time.Second)
 	}
 	rc := &raftNode{
 		proposeC:    proposeC,
@@ -176,25 +176,24 @@ func (rc *raftNode) startRaft() {
 
 	for i := range rpeers {
 		rpeers[i] = raft.Peer{ID: uint64(i + 1)}
+	
 		//*TODO
-		fmt.Println("添加peers***********", rpeers[i])
 		time.Sleep(time.Second)
 	}
 	c := &raft.Config{
 		ID:              uint64(rc.id),
 		ElectionTick:    10,
-		HeartbeatTick:   1,
+		HeartbeatTick:   5,
 		Storage:         rc.raftStorage,
 		MaxSizePerMsg:   1024 * 1024,
 		MaxInflightMsgs: 256,
 	}
 
 	if oldwal {
-		fmt.Println("+++++ old val +++++")
 		time.Sleep(2 * time.Second)
 		rc.node = raft.RestartNode(c)
 	} else {
-		fmt.Println("+++++ new val +++++")
+
 		time.Sleep(2 * time.Second)
 		startPeers := rpeers
 		if rc.join {
@@ -216,6 +215,7 @@ func (rc *raftNode) startRaft() {
 	rc.transport.Start()
 	for i := range rc.peers {
 		if i+1 != rc.id {
+			// fmt.Println("+++++++++++++++++++++++++++++++",rc.id ,"============",i+1)
 			rc.transport.AddPeer(uint64(i+1), []string{rc.peers[i]})
 		}
 	}
@@ -304,10 +304,15 @@ func (rc *raftNode) serveRaft() {
 	}
 
 	err = (&http.Server{Handler: rc.transport.Handler()}).Serve(ln)
+	time.Sleep(5*time.Second)
+	if err != nil {
+		fmt.Println("raftexample: Failed to serve rafthttp (%v) --------------------------------", err)
+	}
 	select {
 	case <-rc.httpstopc:
 	default:
 		log.Fatalf("raftexample: Failed to serve rafthttp (%v)", err)
+
 	}
 	close(rc.httpdonec)
 }
